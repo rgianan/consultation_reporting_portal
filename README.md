@@ -2,6 +2,8 @@
 
 A React/Vite portal based on the supplied TOSF monitoring portal's visual and technical framework. It implements the fields in Annex A, uses email verification for password recovery, and adds a consolidated Central Office admin module.
 
+Production portal: <https://ched-consultation-reporting-portal.vercel.app/>
+
 ## Included
 
 - CHEDRO dashboard, quarterly status and report history
