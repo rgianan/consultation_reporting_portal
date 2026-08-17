@@ -188,16 +188,6 @@ header p {
 .icon svg {
   width: 18px;
 }
-.icon i {
-  position: absolute;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #d44848;
-  right: 10px;
-  top: 8px;
-  border: 2px solid #fff;
-}
 .admin-switch {
   padding: 0 13px;
   color: #40536f;
@@ -1407,31 +1397,6 @@ td b {
   padding: 9px;
   font-size: 9px;
 }
-.demo {
-  border-top: 1px solid #e6e9ee;
-  margin-top: 12px;
-  padding-top: 14px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
-}
-.demo span {
-  grid-column: 1/-1;
-  text-align: center;
-  color: #9aa2ad;
-  font-size: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-}
-.demo button {
-  border: 1px solid #d9e0e8;
-  background: #f7f9fb;
-  color: #405069;
-  border-radius: 7px;
-  padding: 8px;
-  font-size: 9px;
-  font-weight: 700;
-}
 .login-shell footer {
   text-align: center;
   color: #7389a9;
@@ -1543,12 +1508,6 @@ td b {
   }
   .login-card {
     padding: 22px 18px;
-  }
-  .demo {
-    grid-template-columns: 1fr;
-  }
-  .demo span {
-    grid-column: 1;
   }
   .history-banner > span {
     display: none;

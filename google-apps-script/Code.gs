@@ -18,7 +18,6 @@ function doPost(e) {
     if (a === "listAccounts") return listAccounts_(p);
     if (a === "listRegionalSubmissions") return listRegionalSubmissions_(p);
     if (a === "submitDialogue") return submitDialogue_(p);
-    if (a === "adminLogin") return adminLogin_(p);
     if (a === "adminDashboard") return adminDashboard_(p);
     throw new Error("Unsupported action.");
   } catch (err) {
@@ -447,42 +446,11 @@ function listRegionalSubmissions_(p) {
         region: v[i][2],
         quarter: v[i][3],
         date: v[i][4],
+        participants: Number(v[i][5] || 0),
         submittedBy: v[i][19],
         status: v[i][21],
       });
   return out_({ ok: true, region: u.region, rows: rows });
-}
-function adminLogin_(p) {
-  var email = email_(p.email),
-    pass = String(p.password || ""),
-    sh = sheet_("Users", [
-      "Email",
-      "Password_Hash",
-      "Display_Name",
-      "Role",
-      "Active",
-    ]),
-    v = sh.getDataRange().getValues();
-  for (var i = 1; i < v.length; i++)
-    if (
-      email_(v[i][0]) === email &&
-      String(v[i][4]).toLowerCase() !== "false" &&
-      sign_(pass) === v[i][1]
-    ) {
-      var t = Utilities.getUuid();
-      CacheService.getScriptCache().put(
-        "admin_" + t,
-        JSON.stringify({ email: email, name: v[i][2], role: v[i][3] }),
-        SESSION_TTL,
-      );
-      return out_({ ok: true, adminToken: t, displayName: v[i][2] });
-    }
-  throw new Error("Invalid admin credentials.");
-}
-function admin_(t) {
-  var r = CacheService.getScriptCache().get("admin_" + text_(t, 100));
-  if (!r) throw new Error("Admin session expired.");
-  return JSON.parse(r);
 }
 function adminDashboard_(p) {
   accountSession_(p.accountToken || p.adminToken, [
@@ -508,6 +476,10 @@ function adminDashboard_(p) {
       otherMatters: v[i][11],
       attendanceFile: v[i][12],
       photoFiles: v[i][13],
+      presidedBy: v[i][14],
+      rapporteur: v[i][15],
+      certifiedBy: v[i][16],
+      notedBy: v[i][17],
       email: v[i][18],
       submittedBy: v[i][19],
       status: v[i][21],
@@ -629,14 +601,17 @@ function out_(o) {
     ContentService.MimeType.JSON,
   );
 }
-/** Run once after editing values. */
+/** Run once after setting SPREADSHEET_ID and DRIVE_FOLDER_ID in Script Properties. */
 function setupPortal() {
   var props = PropertiesService.getScriptProperties(),
     current = props.getProperties(),
     updates = {};
-  if (!current.SPREADSHEET_ID) updates.SPREADSHEET_ID = "PASTE_SPREADSHEET_ID";
-  if (!current.DRIVE_FOLDER_ID)
-    updates.DRIVE_FOLDER_ID = "PASTE_DRIVE_FOLDER_ID";
+  if (!current.SPREADSHEET_ID || !current.DRIVE_FOLDER_ID)
+    throw new Error(
+      "Set SPREADSHEET_ID and DRIVE_FOLDER_ID in Project Settings > Script properties before running setupPortal().",
+    );
+  SpreadsheetApp.openById(current.SPREADSHEET_ID);
+  DriveApp.getFolderById(current.DRIVE_FOLDER_ID);
   if (!current.OTP_SECRET)
     updates.OTP_SECRET = Utilities.getUuid() + Utilities.getUuid();
   if (!current.ALLOWED_EMAIL_DOMAIN)
@@ -647,8 +622,19 @@ function setupPortal() {
   sheet_("Audit Log", ["Timestamp", "Action", "Reference", "Email", "Detail"]);
 }
 function seedAdmin() {
-  var email = "admin@ched.gov.ph",
-    password = "CHANGE_THIS_PASSWORD";
+  var props = PropertiesService.getScriptProperties(),
+    email = email_(props.getProperty("INITIAL_ADMIN_EMAIL")),
+    password = String(props.getProperty("INITIAL_ADMIN_PASSWORD") || ""),
+    displayName = text_(
+      props.getProperty("INITIAL_ADMIN_NAME") || "Portal Administrator",
+      200,
+    );
+  if (!email) throw new Error("Set INITIAL_ADMIN_EMAIL in Script Properties.");
+  domain_(email, config_());
+  if (password.length < 12)
+    throw new Error(
+      "Set INITIAL_ADMIN_PASSWORD to a password of at least 12 characters.",
+    );
   if (findAccount_(email)) throw new Error("Admin account already exists.");
   var salt = Utilities.getUuid(),
     sh = sheet_("Users", usersHeaders_());
@@ -656,7 +642,7 @@ function seedAdmin() {
     email,
     pwHash_(password, salt),
     salt,
-    "Portal Administrator",
+    displayName,
     "central_admin",
     "Central Office",
     true,
@@ -666,4 +652,5 @@ function seedAdmin() {
     new Date(),
     "",
   ]);
+  props.deleteProperty("INITIAL_ADMIN_PASSWORD");
 }

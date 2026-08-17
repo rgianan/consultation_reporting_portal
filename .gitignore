@@ -5,6 +5,7 @@ node_modules/
 dist/
 coverage/
 .vite/
+.vercel/
 
 # Local environment configuration
 .env
@@ -30,4 +31,3 @@ Desktop.ini
 _reference/
 README.local.md
 *.local.md
-

@@ -84,45 +84,10 @@ const agenda = [
     "Collective higher education institutional governance concerns affecting students",
   ],
 ];
-const sample = [
-  {
-    id: "CDR-2026-041",
-    region: "Region IV-A",
-    quarter: "2nd Quarter",
-    date: "Jun 18, 2026",
-    status: "For review",
-    participants: 84,
-    concerns: 7,
-  },
-  {
-    id: "CDR-2026-040",
-    region: "Region VII",
-    quarter: "2nd Quarter",
-    date: "Jun 12, 2026",
-    status: "Validated",
-    participants: 61,
-    concerns: 5,
-  },
-  {
-    id: "CDR-2026-039",
-    region: "Region III",
-    quarter: "2nd Quarter",
-    date: "Jun 06, 2026",
-    status: "Needs revision",
-    participants: 103,
-    concerns: 9,
-  },
-  {
-    id: "CDR-2026-038",
-    region: "Region XI",
-    quarter: "2nd Quarter",
-    date: "May 29, 2026",
-    status: "Validated",
-    participants: 48,
-    concerns: 4,
-  },
-];
-
+const quarterNow = () =>
+  ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"][
+    Math.floor(new Date().getMonth() / 3)
+  ];
 function App() {
   const [account, setAccount] = useState(() => {
       try {
@@ -312,15 +277,14 @@ function App() {
               onClick={() => setNotifications(!notifications)}
             >
               <Bell />
-              <i />
             </button>
             {notifications && (
               <div className="notification-pop">
                 <b>Notifications</b>
                 <p>
                   {admin
-                    ? "3 account requests await review."
-                    : "Quarter 2 report is due September 30."}
+                    ? "Review account requests and current-quarter submissions."
+                    : `${quarterNow()} reporting is open.`}
                 </p>
                 <small>
                   {admin
@@ -664,35 +628,6 @@ function Login({ onLogin }) {
               )}
             </>
           )}
-          <div className="demo">
-            <span>Interactive preview</span>
-            <button
-              onClick={() =>
-                onLogin({
-                  token: "demo-chedro",
-                  email: "maria.reyes@ched.gov.ph",
-                  name: "Maria Reyes",
-                  role: "chedro_user",
-                  region: "Region IV-A",
-                })
-              }
-            >
-              Enter as CHEDRO
-            </button>
-            <button
-              onClick={() =>
-                onLogin({
-                  token: "demo-admin",
-                  email: "admin@ched.gov.ph",
-                  name: "Ana Santos",
-                  role: "central_admin",
-                  region: "Central Office",
-                })
-              }
-            >
-              Enter as Central Office
-            </button>
-          </div>
         </section>
       </div>
       <footer>
@@ -712,11 +647,28 @@ function Nav({ active, icon, children, onClick }) {
   );
 }
 function Dashboard({ go, account, viewReports }) {
+  const [rows, setRows] = useState([]),
+    [error, setError] = useState("");
+  useEffect(() => {
+    api({ action: "listRegionalSubmissions", accountToken: account.token })
+      .then((d) => setRows(d.rows || []))
+      .catch((e) => setError(e.message));
+  }, [account.token]);
+  const currentQuarter = quarterNow(),
+    currentReport = rows.find((r) => r.quarter === currentQuarter),
+    validated = rows.filter((r) => r.status === "Validated").length,
+    underReview = rows.filter((r) => r.status === "For review").length,
+    participants = rows.reduce(
+      (sum, r) => sum + Number(r.participants || 0),
+      0,
+    );
   return (
     <>
       <div className="hero">
         <div>
-          <span className="eyebrow">2nd Quarter · AY 2026–2027</span>
+          <span className="eyebrow">
+            {currentQuarter} · {new Date().getFullYear()}
+          </span>
           <h2>
             Turn every dialogue into
             <br />
@@ -732,24 +684,43 @@ function Dashboard({ go, account, viewReports }) {
           </button>
         </div>
         <div className="hero-card">
-          <span>Submission progress</span>
-          <b>1 of 1</b>
+          <span>Current-quarter report</span>
+          <b>{currentReport ? "Submitted" : "Pending"}</b>
           <div className="progress">
-            <i />
+            <i style={{ width: currentReport ? "100%" : "0%" }} />
           </div>
           <p>
-            <CheckCircle2 /> Quarter 1 report accepted
+            {currentReport ? <CheckCircle2 /> : <Clock3 />} {currentQuarter}:{" "}
+            {currentReport?.status || "No submission yet"}
           </p>
-          <small>Quarter 2 due September 30, 2026</small>
+          <small>
+            One consultation and dialogue report is required quarterly.
+          </small>
         </div>
       </div>
+      {error && <p className="notice error-notice">{error}</p>}
       <div className="stats">
-        <Stat icon={<FileText />} n="4" label="Reports submitted" tone="blue" />
-        <Stat icon={<CheckCircle2 />} n="3" label="Validated" tone="green" />
-        <Stat icon={<Clock3 />} n="1" label="Under review" tone="amber" />
+        <Stat
+          icon={<FileText />}
+          n={String(rows.length)}
+          label="Reports submitted"
+          tone="blue"
+        />
+        <Stat
+          icon={<CheckCircle2 />}
+          n={String(validated)}
+          label="Validated"
+          tone="green"
+        />
+        <Stat
+          icon={<Clock3 />}
+          n={String(underReview)}
+          label="Under review"
+          tone="amber"
+        />
         <Stat
           icon={<Users />}
-          n="296"
+          n={participants.toLocaleString()}
           label="Participants reached"
           tone="purple"
         />
@@ -763,39 +734,31 @@ function Dashboard({ go, account, viewReports }) {
             </div>
             <button onClick={viewReports}>View all</button>
           </div>
-          <ReportTable
-            rows={sample
-              .slice(0, 3)
-              .map((r) => ({ ...r, region: account.region }))}
-          />
+          <ReportTable rows={rows.slice(0, 3)} />
         </div>
         <div className="panel timeline">
           <div className="panel-head">
             <div>
               <h3>Quarterly timeline</h3>
-              <p>Reporting year 2026</p>
+              <p>Reporting year {new Date().getFullYear()}</p>
             </div>
           </div>
-          {[
-            "Q1 · Submitted",
-            "Q2 · In progress",
-            "Q3 · Opens Oct 1",
-            "Q4 · Opens Jan 1",
-          ].map((x, i) => (
-            <div className={i < 2 ? "mile done" : "mile"} key={x}>
-              <i>{i < 2 ? <CheckCircle2 /> : i + 1}</i>
-              <div>
-                <b>{x}</b>
-                <small>
-                  {i === 0
-                    ? "Accepted March 28"
-                    : i === 1
-                      ? "Due September 30"
-                      : "Not yet available"}
-                </small>
-              </div>
-            </div>
-          ))}
+          {["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"].map(
+            (quarter, i) => {
+              const report = rows.find((r) => r.quarter === quarter);
+              return (
+                <div className={report ? "mile done" : "mile"} key={quarter}>
+                  <i>{report ? <CheckCircle2 /> : i + 1}</i>
+                  <div>
+                    <b>{quarter}</b>
+                    <small>
+                      {report ? report.status : "No submission recorded"}
+                    </small>
+                  </div>
+                </div>
+              );
+            },
+          )}
         </div>
       </div>
     </>
@@ -819,7 +782,7 @@ function ReportForm({ done, account }) {
     [busy, setBusy] = useState(false);
   const [form, setForm] = useState({
     region: account.region,
-    quarter: "2nd Quarter",
+    quarter: quarterNow(),
     date: "",
     regionConcerns: "",
     otherMatters: "",
@@ -912,10 +875,6 @@ function ReportForm({ done, account }) {
     }
     setBusy(true);
     try {
-      if (account.token === "demo-chedro") {
-        done();
-        return;
-      }
       await api({
         action: "submitDialogue",
         accountToken: account.token,
@@ -1221,16 +1180,11 @@ function downloadCsv(rows, name = "chedro-dialogue-reports.csv") {
   URL.revokeObjectURL(url);
 }
 function Reports({ account }) {
-  const [rows, setRows] = useState(
-      account.token === "demo-chedro"
-        ? sample.map((r) => ({ ...r, region: account.region }))
-        : [],
-    ),
+  const [rows, setRows] = useState([]),
     [error, setError] = useState(""),
     [query, setQuery] = useState(""),
     [validatedOnly, setValidatedOnly] = useState(false);
   useEffect(() => {
-    if (account.token === "demo-chedro") return;
     api({ action: "listRegionalSubmissions", accountToken: account.token })
       .then((d) => setRows(d.rows || []))
       .catch((e) => setError(e.message));
@@ -1357,27 +1311,72 @@ function Admin({ tab, setTab, account }) {
   const [live, setLive] = useState(null),
     [loadError, setLoadError] = useState("");
   useEffect(() => {
-    if (account.token === "demo-admin") return;
     api({ action: "adminDashboard", accountToken: account.token })
       .then(setLive)
       .catch((e) => setLoadError(e.message));
   }, [account.token]);
-  const total = 17,
-    adminRows = live?.rows || sample,
-    submitted = live ? Object.keys(live.summary?.byRegion || {}).length : 14,
+  const currentQuarter = quarterNow(),
+    total = regions.length,
+    adminRows = live?.rows || [],
+    periodRows = adminRows.filter((r) => r.quarter === currentQuarter),
+    submittedRegions = new Set(periodRows.map((r) => r.region)),
+    submitted = submittedRegions.size,
     coverage = Math.round((submitted / total) * 100),
-    participants = live?.summary?.participants ?? 1248,
-    themes = live?.summary?.themes || {
-      initiatives: 7,
-      student: 8,
-      academic: 6,
-      governance: 3,
-      regionSpecific: 5,
+    participants = periodRows.reduce(
+      (sum, row) => sum + Number(row.participants || 0),
+      0,
+    ),
+    themes = {
+      initiatives: periodRows.filter((r) => r.initiatives).length,
+      student: periodRows.filter((r) => r.student).length,
+      academic: periodRows.filter((r) => r.academic).length,
+      governance: periodRows.filter((r) => r.governance).length,
+      regionSpecific: periodRows.filter((r) => r.regionConcerns).length,
     },
     concerns = Object.values(themes).reduce((a, b) => a + Number(b || 0), 0),
-    validated = live
-      ? adminRows.filter((r) => r.status === "Validated").length
-      : 10;
+    validated = periodRows.filter((r) => r.status === "Validated").length,
+    attendanceCount = periodRows.filter((r) => r.attendanceFile).length,
+    photoCount = periodRows.filter((r) => r.photoFiles).length,
+    agendaComplete = periodRows.filter(
+      (r) => r.initiatives && r.student && r.academic && r.governance,
+    ).length,
+    signatoriesComplete = periodRows.filter(
+      (r) => r.presidedBy && r.rapporteur && r.certifiedBy && r.notedBy,
+    ).length,
+    completeReports = periodRows.filter(
+      (r) =>
+        r.date &&
+        r.initiatives &&
+        r.student &&
+        r.academic &&
+        r.governance &&
+        r.attendanceFile &&
+        r.photoFiles &&
+        r.presidedBy &&
+        r.rapporteur &&
+        r.certifiedBy &&
+        r.notedBy,
+    ).length,
+    dateCount = periodRows.filter((r) => r.date && r.quarter).length,
+    followUps = periodRows.filter((r) => r.status === "Needs revision").length,
+    rate = (value) =>
+      periodRows.length ? Math.round((value / periodRows.length) * 100) : 0,
+    regionStatus = (region) => {
+      const reports = periodRows.filter((r) => r.region === region);
+      if (!reports.length) return "Pending";
+      if (reports.some((r) => r.status === "Needs revision"))
+        return "Needs revision";
+      if (reports.some((r) => r.status === "For review")) return "For review";
+      return reports[0].status || "Submitted";
+    };
+  const themeRanking = [
+      ["Student welfare concerns", themes.student],
+      ["Curriculum and academic programs", themes.academic],
+      ["CHED initiatives and policies", themes.initiatives],
+      ["Region-specific concerns", themes.regionSpecific],
+      ["HEI governance concerns", themes.governance],
+    ].sort((a, b) => b[1] - a[1]),
+    regionalSignals = periodRows.filter((r) => r.regionConcerns).slice(0, 3);
   return (
     <>
       <div className="admin-top">
@@ -1385,14 +1384,16 @@ function Admin({ tab, setTab, account }) {
           <CalendarDays />
           <div>
             <small>Reporting period</small>
-            <b>2nd Quarter · 2026</b>
+            <b>
+              {currentQuarter} · {new Date().getFullYear()}
+            </b>
           </div>
           <ChevronRight />
         </div>
         <button
           className="primary"
           onClick={() =>
-            downloadCsv(adminRows, "chedro-consolidated-report.csv")
+            downloadCsv(periodRows, "chedro-consolidated-report.csv")
           }
         >
           <Download />
@@ -1460,22 +1461,17 @@ function Admin({ tab, setTab, account }) {
                 <i style={{ width: coverage + "%" }} />
               </div>
               <div className="region-grid">
-                {regions.map((r, i) => (
-                  <div
-                    className={i < submitted ? "region sent" : "region"}
-                    key={r}
-                  >
-                    <i>{i < submitted ? <CheckCircle2 /> : <Clock3 />}</i>
-                    <span>{r}</span>
-                    <small>
-                      {i < 10
-                        ? "Validated"
-                        : i < submitted
-                          ? "For review"
-                          : "Pending"}
-                    </small>
-                  </div>
-                ))}
+                {regions.map((r) => {
+                  const status = regionStatus(r);
+                  const sent = status !== "Pending";
+                  return (
+                    <div className={sent ? "region sent" : "region"} key={r}>
+                      <i>{sent ? <CheckCircle2 /> : <Clock3 />}</i>
+                      <span>{r}</span>
+                      <small>{status}</small>
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="panel insights">
@@ -1524,28 +1520,32 @@ function Admin({ tab, setTab, account }) {
           </div>
           <div className="metric-grid">
             <MiniMetric
-              label="On-time submission"
-              value="86%"
-              detail="12 of 14 received before deadline"
-              trend="+8 pts from Q1"
+              label="Validation rate"
+              value={`${rate(validated)}%`}
+              detail={`${validated} of ${periodRows.length} reports validated`}
+              trend={`${periodRows.length - validated} awaiting completion or review`}
             />
             <MiniMetric
               label="Report completeness"
-              value="92%"
-              detail="Required evidence and signatories"
-              trend="+3 pts from Q1"
+              value={`${rate(completeReports)}%`}
+              detail={`${completeReports} of ${periodRows.length} reports complete`}
+              trend="Required evidence and signatories"
             />
             <MiniMetric
               label="Average participants"
-              value="89"
+              value={String(
+                periodRows.length
+                  ? Math.round(participants / periodRows.length)
+                  : 0,
+              )}
               detail="Per regional consultation"
-              trend="1,248 participants total"
+              trend={`${participants.toLocaleString()} participants total`}
             />
             <MiniMetric
-              label="Action closure rate"
-              value="64%"
-              detail="32 of 50 agreed actions completed"
-              trend="18 actions remain open"
+              label="Outstanding offices"
+              value={String(total - submitted)}
+              detail={`${submitted} of ${total} CHEDROs submitted`}
+              trend={`${coverage}% national coverage`}
             />
           </div>
         </>
@@ -1555,7 +1555,7 @@ function Admin({ tab, setTab, account }) {
           <div className="stats admin-stats">
             <Stat
               icon={<FileText />}
-              n={String(adminRows.length)}
+              n={String(periodRows.length)}
               label="Received"
               tone="blue"
             />
@@ -1568,7 +1568,7 @@ function Admin({ tab, setTab, account }) {
             <Stat
               icon={<Clock3 />}
               n={String(
-                adminRows.filter((r) => r.status === "For review").length,
+                periodRows.filter((r) => r.status === "For review").length,
               )}
               label="For review"
               tone="amber"
@@ -1576,7 +1576,7 @@ function Admin({ tab, setTab, account }) {
             <Stat
               icon={<CircleAlert />}
               n={String(
-                adminRows.filter((r) => r.status === "Needs revision").length,
+                periodRows.filter((r) => r.status === "Needs revision").length,
               )}
               label="Needs revision"
               tone="purple"
@@ -1594,7 +1594,7 @@ function Admin({ tab, setTab, account }) {
                 For review
               </div>
             </div>
-            <ReportTable rows={adminRows} />
+            <ReportTable rows={periodRows} />
           </div>
         </>
       )}
@@ -1613,7 +1613,7 @@ function Admin({ tab, setTab, account }) {
                 count={themes.student}
                 pct={Math.min(
                   100,
-                  (themes.student / Math.max(1, adminRows.length)) * 100,
+                  (themes.student / Math.max(1, periodRows.length)) * 100,
                 )}
               />
               <ThemeBar
@@ -1621,7 +1621,7 @@ function Admin({ tab, setTab, account }) {
                 count={themes.academic}
                 pct={Math.min(
                   100,
-                  (themes.academic / Math.max(1, adminRows.length)) * 100,
+                  (themes.academic / Math.max(1, periodRows.length)) * 100,
                 )}
               />
               <ThemeBar
@@ -1629,7 +1629,7 @@ function Admin({ tab, setTab, account }) {
                 count={themes.initiatives}
                 pct={Math.min(
                   100,
-                  (themes.initiatives / Math.max(1, adminRows.length)) * 100,
+                  (themes.initiatives / Math.max(1, periodRows.length)) * 100,
                 )}
               />
               <ThemeBar
@@ -1637,7 +1637,8 @@ function Admin({ tab, setTab, account }) {
                 count={themes.regionSpecific}
                 pct={Math.min(
                   100,
-                  (themes.regionSpecific / Math.max(1, adminRows.length)) * 100,
+                  (themes.regionSpecific / Math.max(1, periodRows.length)) *
+                    100,
                 )}
               />
               <ThemeBar
@@ -1645,34 +1646,25 @@ function Admin({ tab, setTab, account }) {
                 count={themes.governance}
                 pct={Math.min(
                   100,
-                  (themes.governance / Math.max(1, adminRows.length)) * 100,
+                  (themes.governance / Math.max(1, periodRows.length)) * 100,
                 )}
               />
             </div>
             <div className="panel action-panel">
               <div className="panel-head">
                 <div>
-                  <h3>Recommended Central Office actions</h3>
-                  <p>Consolidated from regional agreements</p>
+                  <h3>Priority review areas</h3>
+                  <p>Ranked by current-quarter reporting frequency</p>
                 </div>
               </div>
-              {[
-                [
-                  "Issue subsidy clarification",
-                  "Office of Student Development",
-                  "High",
-                ],
-                ["Issue curriculum consultation guidance", "OPSD", "High"],
-                ["Develop student welfare referral protocol", "OSDS", "Medium"],
-                ["Convene connectivity working group", "ICTS", "Medium"],
-              ].map((a, i) => (
-                <div className="action-row" key={a[0]}>
+              {themeRanking.slice(0, 4).map(([label, count], i) => (
+                <div className="action-row" key={label}>
                   <i>{i + 1}</i>
                   <div>
-                    <b>{a[0]}</b>
-                    <small>{a[1]}</small>
+                    <b>{label}</b>
+                    <small>{count} submitted reports</small>
                   </div>
-                  <span className={a[2].toLowerCase()}>{a[2]}</span>
+                  <span className={i < 2 ? "high" : "medium"}>Review</span>
                 </div>
               ))}
             </div>
@@ -1685,19 +1677,19 @@ function Admin({ tab, setTab, account }) {
               </div>
             </div>
             <div className="quotes">
-              <blockquote>
-                “Students requested a unified explanation of scholarship
-                eligibility and release timelines.”
-                <cite>Region IV-A · Student welfare</cite>
-              </blockquote>
-              <blockquote>
-                “Employers asked to participate earlier in regional curriculum
-                consultations.”<cite>Region VII · Academic programs</cite>
-              </blockquote>
-              <blockquote>
-                “Campus guidance offices need a shared referral protocol for
-                high-risk cases.”<cite>NIR · Student welfare</cite>
-              </blockquote>
+              {regionalSignals.length ? (
+                regionalSignals.map((report) => (
+                  <blockquote key={report.id}>
+                    “{report.regionConcerns}”
+                    <cite>{report.region} · Region-specific concern</cite>
+                  </blockquote>
+                ))
+              ) : (
+                <p className="empty-state">
+                  No region-specific concerns have been submitted for this
+                  quarter.
+                </p>
+              )}
             </div>
           </div>
         </>
@@ -1707,25 +1699,25 @@ function Admin({ tab, setTab, account }) {
           <div className="stats admin-stats">
             <Stat
               icon={<CheckCircle2 />}
-              n="13"
+              n={String(completeReports)}
               label="Complete reports"
               tone="green"
             />
             <Stat
               icon={<Paperclip />}
-              n="12"
+              n={String(attendanceCount)}
               label="With attendance sheets"
               tone="blue"
             />
             <Stat
               icon={<Image />}
-              n="11"
+              n={String(photoCount)}
               label="With photo records"
               tone="purple"
             />
             <Stat
               icon={<CircleAlert />}
-              n="5"
+              n={String(followUps)}
               label="Follow-ups required"
               tone="amber"
             />
@@ -1740,24 +1732,33 @@ function Admin({ tab, setTab, account }) {
               </div>
               <CheckRow
                 label="Consultation date and quarter"
-                value="14/14"
-                ok
+                value={`${dateCount}/${periodRows.length}`}
+                ok={dateCount === periodRows.length}
+                warn={dateCount !== periodRows.length}
               />
               <CheckRow
                 label="Four agenda categories completed"
-                value="13/14"
-                warn
+                value={`${agendaComplete}/${periodRows.length}`}
+                ok={agendaComplete === periodRows.length}
+                warn={agendaComplete !== periodRows.length}
               />
-              <CheckRow label="Attendance sheet attached" value="12/14" warn />
+              <CheckRow
+                label="Attendance sheet attached"
+                value={`${attendanceCount}/${periodRows.length}`}
+                ok={attendanceCount === periodRows.length}
+                warn={attendanceCount !== periodRows.length}
+              />
               <CheckRow
                 label="Photo documentation attached"
-                value="11/14"
-                warn
+                value={`${photoCount}/${periodRows.length}`}
+                ok={photoCount === periodRows.length}
+                warn={photoCount !== periodRows.length}
               />
               <CheckRow
                 label="All four signatories supplied"
-                value="13/14"
-                warn
+                value={`${signatoriesComplete}/${periodRows.length}`}
+                ok={signatoriesComplete === periodRows.length}
+                warn={signatoriesComplete !== periodRows.length}
               />
             </div>
             <div className="panel">
@@ -1767,19 +1768,17 @@ function Admin({ tab, setTab, account }) {
                   <p>Submission and follow-up status</p>
                 </div>
               </div>
-              {["Region IX", "Region XII", "CARAGA"].map((r, i) => (
-                <div className="pending-row" key={r}>
-                  <div>
-                    <b>{r}</b>
-                    <small>
-                      {i < 2
-                        ? "Reminder sent Aug 14"
-                        : "No submission received"}
-                    </small>
+              {regions
+                .filter((r) => !submittedRegions.has(r))
+                .map((r) => (
+                  <div className="pending-row" key={r}>
+                    <div>
+                      <b>{r}</b>
+                      <small>No submission received for {currentQuarter}</small>
+                    </div>
+                    <span>Follow up</span>
                   </div>
-                  <span>{i < 2 ? "Awaiting" : "Follow up"}</span>
-                </div>
-              ))}
+                ))}
             </div>
           </div>
         </>
@@ -1823,40 +1822,9 @@ function CheckRow({ label, value, ok, warn }) {
   );
 }
 function UserAccess({ account }) {
-  const [users, setUsers] = useState([
-      [
-        "Paolo Garcia",
-        "paolo.garcia@ched.gov.ph",
-        "Region III",
-        "CHEDRO User",
-        "Pending",
-      ],
-      [
-        "Maria Reyes",
-        "maria.reyes@ched.gov.ph",
-        "Region IV-A",
-        "CHEDRO User",
-        "Active",
-      ],
-      ["Joel Ramos", "joel.ramos@ched.gov.ph", "NIR", "CHEDRO User", "Active"],
-      [
-        "Liza Cruz",
-        "liza.cruz@ched.gov.ph",
-        "Region VII",
-        "CHEDRO User",
-        "Active",
-      ],
-      [
-        "Ana Santos",
-        "ana.santos@ched.gov.ph",
-        "Central Office",
-        "Administrator",
-        "Active",
-      ],
-    ]),
+  const [users, setUsers] = useState([]),
     [message, setMessage] = useState("");
   useEffect(() => {
-    if (account.token === "demo-admin") return;
     api({ action: "listAccounts", accountToken: account.token })
       .then((d) =>
         setUsers(
@@ -1873,13 +1841,12 @@ function UserAccess({ account }) {
   }, [account.token]);
   async function decide(email, approve) {
     try {
-      if (account.token !== "demo-admin")
-        await api({
-          action: "approveAccount",
-          accountToken: account.token,
-          email,
-          approve,
-        });
+      await api({
+        action: "approveAccount",
+        accountToken: account.token,
+        email,
+        approve,
+      });
       setUsers((us) =>
         us.map((u) =>
           u[1] === email

@@ -21,7 +21,20 @@ A React/Vite portal based on the supplied TOSF monitoring portal's visual and te
 2. Copy `.env.example` to `.env` and set the deployed Apps Script URL.
 3. Create a private Google Drive folder for attendance sheets and consultation photos.
 4. Paste `google-apps-script/Code.gs` into an Apps Script project attached to a Google Sheet.
-5. Add the Sheet and Drive folder IDs in `setupPortal()`, run it once, then deploy as a Web App. Change the placeholder in `seedAdmin()` before running it.
-6. CHEDRO personnel create their own account and select their regional office. A Central Administrator verifies and approves the request before the account can sign in.
+5. In **Apps Script → Project Settings → Script properties**, add `SPREADSHEET_ID`, `DRIVE_FOLDER_ID`, `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_PASSWORD`, and optionally `INITIAL_ADMIN_NAME`.
+6. Run `setupPortal()` once, then run `seedAdmin()` once. The initial password property is deleted after the administrator is created.
+7. Deploy the script as a Web App that executes as the owner and allows access by **Anyone**. Portal access remains protected by the approved-account login and official-domain checks.
+8. CHEDRO personnel create their own account and select their regional office. A Central Administrator verifies and approves the request before the account can sign in.
 
-The UI includes explicit CHEDRO and Central Office preview buttons until a deployed backend is connected. In production, registration requests remain inactive until Central Office approval, sessions are role-checked by the backend, and each report stores the submitting user's name, email, role, and approved regional office for auditability.
+Registration requests remain inactive until Central Office approval, sessions are role-checked by the backend, and each report stores the submitting user's name, email, role, and approved regional office for auditability.
+
+## Deploy to Vercel
+
+1. Push this repository to GitHub, GitLab, or Bitbucket, then import it in Vercel.
+2. Vercel will use `vercel.json` to build the Vite app and publish the `dist` directory.
+3. In **Project Settings → Environment Variables**, add:
+   - `VITE_GAS_WEB_APP_URL`: the deployed Google Apps Script Web App URL ending in `/exec`
+   - `VITE_ALLOWED_EMAIL_DOMAIN`: `ched.gov.ph`
+4. Apply both variables to Production, Preview, and Development, then deploy the project.
+
+Vite embeds `VITE_*` values during the build, so redeploy the portal after changing either variable. For command-line deployment after signing in to Vercel, run `npx vercel` for a preview or `npx vercel --prod` for production.
