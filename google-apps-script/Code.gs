@@ -19,6 +19,7 @@ function doPost(e) {
     if (a === "listRegionalSubmissions") return listRegionalSubmissions_(p);
     if (a === "submitDialogue") return submitDialogue_(p);
     if (a === "adminDashboard") return adminDashboard_(p);
+    if (a === "reviewSubmission") return reviewSubmission_(p);
     throw new Error("Unsupported action.");
   } catch (err) {
     return out_({ ok: false, message: err.message || String(err) });
@@ -442,13 +443,29 @@ function listRegionalSubmissions_(p) {
   for (var i = 1; i < v.length; i++)
     if (v[i][2] === u.region)
       rows.push({
+        // yearOf() falls back to this when the sheet renders consultation
+        // dates without a four-digit year.
+        timestamp: v[i][0],
         id: v[i][1],
         region: v[i][2],
         quarter: v[i][3],
         date: v[i][4],
         participants: Number(v[i][5] || 0),
+        initiatives: v[i][6],
+        student: v[i][7],
+        academic: v[i][8],
+        governance: v[i][9],
+        regionConcerns: v[i][10],
+        otherMatters: v[i][11],
+        attendanceFile: v[i][12],
+        photoFiles: v[i][13],
+        presidedBy: v[i][14],
+        rapporteur: v[i][15],
+        certifiedBy: v[i][16],
+        notedBy: v[i][17],
         submittedBy: v[i][19],
         status: v[i][21],
+        remarks: v[i][22],
       });
   return out_({ ok: true, region: u.region, rows: rows });
 }
@@ -483,6 +500,7 @@ function adminDashboard_(p) {
       email: v[i][18],
       submittedBy: v[i][19],
       status: v[i][21],
+      remarks: v[i][22],
     });
   var byRegion = {},
     themes = {
@@ -512,6 +530,71 @@ function adminDashboard_(p) {
       themes: themes,
     },
   });
+}
+/** Central Office review decision: set a submission status and remarks. */
+function reviewSubmission_(p) {
+  var admin = accountSession_(p.accountToken, [
+      "central_admin",
+      "central_reviewer",
+    ]),
+    reference = text_(p.reference, 60),
+    status = text_(p.status, 40),
+    remarks = text_(p.remarks, 2000),
+    allowed = ["For review", "Validated", "Needs revision"];
+  if (!reference) throw new Error("Missing report reference.");
+  if (allowed.indexOf(status) < 0) throw new Error("Unsupported status.");
+  if (status === "Needs revision" && !remarks)
+    throw new Error("Enter remarks explaining what the CHEDRO must revise.");
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var sh = sheet_("Dialogue Reports", headers_()),
+      v = sh.getDataRange().getValues(),
+      h = headers_(),
+      statusCol = h.indexOf("Status") + 1,
+      remarksCol = h.indexOf("Admin_Remarks") + 1;
+    for (var i = 1; i < v.length; i++)
+      if (String(v[i][1]) === reference) {
+        sh.getRange(i + 1, statusCol).setValue(status);
+        sh.getRange(i + 1, remarksCol).setValue(remarks);
+        audit_(
+          "submission_reviewed",
+          reference,
+          admin.email,
+          status + (remarks ? " / " + remarks : ""),
+        );
+        var recipient = email_(v[i][18]);
+        if (recipient && status !== "For review")
+          try {
+            MailApp.sendEmail({
+              to: recipient,
+              subject:
+                "Consultation report " + reference + " marked " + status,
+              htmlBody:
+                "<p>Your consultation and dialogue report <b>" +
+                reference +
+                "</b> for " +
+                String(v[i][2]) +
+                " (" +
+                String(v[i][3]) +
+                ") has been marked <b>" +
+                status +
+                "</b> by the Central Office.</p>" +
+                (remarks ? "<p>Remarks: " + remarks + "</p>" : ""),
+            });
+          } catch (mailErr) {}
+        return out_({
+          ok: true,
+          reference: reference,
+          status: status,
+          remarks: remarks,
+          message: "Report marked " + status + ".",
+        });
+      }
+    throw new Error("Report " + reference + " was not found.");
+  } finally {
+    lock.releaseLock();
+  }
 }
 function headers_() {
   return [

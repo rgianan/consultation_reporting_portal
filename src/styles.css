@@ -1666,3 +1666,172 @@ td b {
 .no-action {
   color: #a3aab4;
 }
+
+/* ---- Reporting period and CHEDRO filters ---- */
+.period-selects {
+  display: flex;
+  gap: 6px;
+  margin-top: 3px;
+}
+.period-selects select,
+.toolbar select {
+  border: 1px solid #dde2e8;
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: #22314a;
+  cursor: pointer;
+}
+.period-selects select {
+  font-weight: 700;
+}
+.toolbar select.filter-on {
+  background: #e8f0fa;
+  border-color: #a9c2df;
+  color: #245d9c;
+  font-weight: 700;
+}
+.region-grid .region {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  /* These tiles are <button>s; without this they pick up the user-agent
+     ButtonFace fill instead of sitting flat on the panel. */
+  background: transparent;
+  cursor: pointer;
+}
+.region-grid .region:hover {
+  border-color: #a9c2df;
+  background: #f2f7fd;
+}
+
+/* ---- Annex A detail view ---- */
+.annex-detail {
+  display: grid;
+  gap: 14px;
+}
+.annex-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+.annex-head b {
+  font-size: 13px;
+}
+.annex-remarks {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  background: #fff4f3;
+  border: 1px solid #f3cfca;
+  border-radius: 9px;
+  padding: 11px 13px;
+  color: #8d3226;
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 0;
+}
+.annex-remarks svg {
+  width: 15px;
+  flex: none;
+}
+.annex-sections {
+  display: grid;
+  gap: 11px;
+  margin: 0;
+}
+.annex-sections dt {
+  font-size: 10px;
+  font-weight: 700;
+  color: #4a5668;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.annex-sections dd {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #22314a;
+  white-space: pre-wrap;
+  border-left: 2px solid #d7e1ee;
+  padding-left: 11px;
+}
+.annex-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.annex-files a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #dde2e8;
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #245d9c;
+  text-decoration: none;
+}
+.annex-files a:hover {
+  border-color: #a9c2df;
+  background: #f2f7fd;
+}
+.annex-files svg {
+  width: 14px;
+}
+.annex-signatories {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 11px;
+  border-top: 1px solid #e3e8ef;
+  padding-top: 13px;
+}
+.annex-signatories small {
+  display: block;
+  font-size: 9.5px;
+  color: #7d8795;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.annex-signatories b {
+  font-size: 11.5px;
+}
+
+/* ---- Central Office review controls ---- */
+.review-actions {
+  border-top: 1px solid #e3e8ef;
+  padding-top: 13px;
+  display: grid;
+  gap: 10px;
+}
+.review-actions textarea {
+  width: 100%;
+}
+.review-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.review-buttons button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.review-buttons svg {
+  width: 14px;
+}
+.review-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.empty-state {
+  padding: 26px 18px;
+  text-align: center;
+  color: #7d8795;
+  font-size: 11px;
+}

@@ -18,7 +18,6 @@ import {
   Menu,
   X,
   Download,
-  SlidersHorizontal,
   Eye,
   Clock3,
   CircleAlert,
@@ -84,10 +83,38 @@ const agenda = [
     "Collective higher education institutional governance concerns affecting students",
   ],
 ];
-const quarterNow = () =>
-  ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"][
-    Math.floor(new Date().getMonth() / 3)
-  ];
+const QUARTERS = [
+  "1st Quarter",
+  "2nd Quarter",
+  "3rd Quarter",
+  "4th Quarter",
+];
+const STATUSES = ["For review", "Validated", "Needs revision"];
+const quarterNow = () => QUARTERS[Math.floor(new Date().getMonth() / 3)];
+const yearNow = () => String(new Date().getFullYear());
+/** Reporting year of a submission, read from the consultation date and
+ * falling back to the submission timestamp. */
+const yearOf = (r) => {
+  const m =
+    String(r.date || "").match(/(?:19|20)\d{2}/) ||
+    String(r.timestamp || "").match(/(?:19|20)\d{2}/);
+  return m ? m[0] : "";
+};
+/** Annex A sections in reporting order, used by the detail view and exports. */
+const ANNEX_SECTIONS = [
+  ["initiatives", "CHED initiatives, programs and policies"],
+  ["student", "Student concerns related to student welfare and services"],
+  ["academic", "Pressing matters related to curriculum or academic programs"],
+  ["governance", "Collective HEI governance concerns affecting students"],
+  ["regionConcerns", "Region-specific concerns"],
+  ["otherMatters", "Other matters"],
+];
+const SIGNATORIES = [
+  ["presidedBy", "Presided by"],
+  ["rapporteur", "Rapporteur"],
+  ["certifiedBy", "Certified correct by"],
+  ["notedBy", "Noted by: CHED Regional Director"],
+];
 function App() {
   const [account, setAccount] = useState(() => {
       try {
@@ -655,7 +682,11 @@ function Dashboard({ go, account, viewReports }) {
       .catch((e) => setError(e.message));
   }, [account.token]);
   const currentQuarter = quarterNow(),
-    currentReport = rows.find((r) => r.quarter === currentQuarter),
+    currentYear = yearNow(),
+    // The quarterly timeline and current-quarter card cover this reporting
+    // year only, so a prior year's report never marks this year as submitted.
+    thisYearRows = rows.filter((r) => yearOf(r) === currentYear),
+    currentReport = thisYearRows.find((r) => r.quarter === currentQuarter),
     validated = rows.filter((r) => r.status === "Validated").length,
     underReview = rows.filter((r) => r.status === "For review").length,
     participants = rows.reduce(
@@ -740,25 +771,23 @@ function Dashboard({ go, account, viewReports }) {
           <div className="panel-head">
             <div>
               <h3>Quarterly timeline</h3>
-              <p>Reporting year {new Date().getFullYear()}</p>
+              <p>Reporting year {currentYear}</p>
             </div>
           </div>
-          {["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"].map(
-            (quarter, i) => {
-              const report = rows.find((r) => r.quarter === quarter);
-              return (
-                <div className={report ? "mile done" : "mile"} key={quarter}>
-                  <i>{report ? <CheckCircle2 /> : i + 1}</i>
-                  <div>
-                    <b>{quarter}</b>
-                    <small>
-                      {report ? report.status : "No submission recorded"}
-                    </small>
-                  </div>
+          {QUARTERS.map((quarter, i) => {
+            const report = thisYearRows.find((r) => r.quarter === quarter);
+            return (
+              <div className={report ? "mile done" : "mile"} key={quarter}>
+                <i>{report ? <CheckCircle2 /> : i + 1}</i>
+                <div>
+                  <b>{quarter}</b>
+                  <small>
+                    {report ? report.status : "No submission recorded"}
+                  </small>
                 </div>
-              );
-            },
-          )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </>
@@ -928,12 +957,7 @@ function ReportForm({ done, account }) {
                 value={form.quarter}
                 onChange={(e) => update("quarter", e.target.value)}
               >
-                {[
-                  "1st Quarter",
-                  "2nd Quarter",
-                  "3rd Quarter",
-                  "4th Quarter",
-                ].map((q) => (
+                {QUARTERS.map((q) => (
                   <option key={q}>{q}</option>
                 ))}
               </select>
@@ -1162,17 +1186,53 @@ function Upload({ icon, title, selected, ...props }) {
     </label>
   );
 }
+// U+FEFF byte-order mark, so Excel opens the export as UTF-8.
+const BOM = String.fromCharCode(0xfeff);
+const CSV_COLUMNS = [
+  ["id", "Reference"],
+  ["region", "CHED Regional Office"],
+  ["quarter", "Quarter"],
+  ["date", "Date of consultation and dialogue"],
+  ["participants", "Total participants"],
+  ["initiatives", "CHED initiatives, programs and policies"],
+  ["student", "Student welfare and services"],
+  ["academic", "Curriculum and academic programs"],
+  ["governance", "HEI governance concerns"],
+  ["regionConcerns", "Region-specific concerns"],
+  ["otherMatters", "Other matters"],
+  ["attendanceFile", "Attendance sheet"],
+  ["photoFiles", "Photo documentation"],
+  ["presidedBy", "Presided by"],
+  ["rapporteur", "Rapporteur"],
+  ["certifiedBy", "Certified correct by"],
+  ["notedBy", "Noted by: CHED Regional Director"],
+  ["submittedBy", "Submitted by"],
+  ["status", "Status"],
+  ["remarks", "Central Office remarks"],
+];
+/** Export every Annex A field the caller actually holds, so a consolidated
+ * file carries the narrative and not only the reference numbers. */
 function downloadCsv(rows, name = "chedro-dialogue-reports.csv") {
-  const cols = ["id", "region", "quarter", "date", "status"];
-  const csv = [
-    cols.join(","),
-    ...rows.map((r) =>
-      cols
-        .map((c) => `"${String(r[c] ?? "").replaceAll('"', '""')}"`)
-        .join(","),
+  const present = CSV_COLUMNS.filter(([k]) =>
+      rows.some((r) => String(r[k] ?? "") !== ""),
     ),
-  ].join("\n");
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" })),
+    cols = present.length ? present : CSV_COLUMNS.slice(0, 5),
+    // Reports carry free text written by regional users. Excel evaluates a
+    // field that starts with = + - @ (or a leading tab/CR) as a formula even
+    // when it is quoted, so prefix those with an apostrophe to keep them text.
+    cell = (v) => {
+      const text = String(v ?? "")
+        .replaceAll('"', '""')
+        .replace(/\r?\n/g, " · ");
+      return `"${/^[=+\-@\t\r]/.test(text) ? "'" + text : text}"`;
+    };
+  const csv = [
+    cols.map(([, label]) => cell(label)).join(","),
+    ...rows.map((r) => cols.map(([k]) => cell(r[k])).join(",")),
+  ].join("\r\n");
+  const url = URL.createObjectURL(
+      new Blob([BOM + csv], { type: "text/csv;charset=utf-8" }),
+    ),
     a = document.createElement("a");
   a.href = url;
   a.download = name;
@@ -1183,20 +1243,30 @@ function Reports({ account }) {
   const [rows, setRows] = useState([]),
     [error, setError] = useState(""),
     [query, setQuery] = useState(""),
-    [validatedOnly, setValidatedOnly] = useState(false);
+    [quarter, setQuarter] = useState("All quarters"),
+    [year, setYear] = useState("All years"),
+    [status, setStatus] = useState("All statuses");
   useEffect(() => {
     api({ action: "listRegionalSubmissions", accountToken: account.token })
       .then((d) => setRows(d.rows || []))
       .catch((e) => setError(e.message));
   }, [account.token]);
-  const filtered = rows.filter(
-    (r) =>
-      (!validatedOnly || r.status === "Validated") &&
-      [r.id, r.region, r.quarter, r.date, r.status]
-        .join(" ")
-        .toLowerCase()
-        .includes(query.toLowerCase()),
-  );
+  const years = Array.from(
+      new Set(rows.map(yearOf).filter(Boolean).concat(yearNow())),
+    ).sort((a, b) => b.localeCompare(a)),
+    needsRevision = rows.filter((r) => r.status === "Needs revision").length,
+    queryText = query.trim().toLowerCase(),
+    filtered = rows.filter(
+      (r) =>
+        (status === "All statuses" || r.status === status) &&
+        (quarter === "All quarters" || r.quarter === quarter) &&
+        (year === "All years" || yearOf(r) === year) &&
+        (!queryText ||
+          [r.id, r.region, r.quarter, r.date, r.status, r.remarks]
+            .join(" ")
+            .toLowerCase()
+            .includes(queryText)),
+    );
   return (
     <>
       <div className="history-banner">
@@ -1211,6 +1281,12 @@ function Reports({ account }) {
         <span>{rows.length} active reports</span>
       </div>
       {error && <p className="notice error-notice">{error}</p>}
+      {needsRevision > 0 && (
+        <p className="notice error-notice">
+          {needsRevision} report{needsRevision > 1 ? "s" : ""} returned by the
+          Central Office for revision. Open the report to read the remarks.
+        </p>
+      )}
       <div className="panel reports">
         <div className="toolbar">
           <div className="search">
@@ -1219,28 +1295,60 @@ function Reports({ account }) {
               aria-label="Search reports"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search reports or reference…"
+              placeholder="Search reports, reference or remarks…"
             />
           </div>
-          <button
-            className={validatedOnly ? "filter-on" : ""}
-            onClick={() => setValidatedOnly(!validatedOnly)}
+          <select
+            aria-label="Filter by quarter"
+            className={quarter === "All quarters" ? "" : "filter-on"}
+            value={quarter}
+            onChange={(e) => setQuarter(e.target.value)}
           >
-            <SlidersHorizontal />
-            {validatedOnly ? "Validated only" : "All statuses"}
-          </button>
+            <option>All quarters</option>
+            {QUARTERS.map((q) => (
+              <option key={q}>{q}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by reporting year"
+            className={year === "All years" ? "" : "filter-on"}
+            value={year}
+            onChange={(e) => setYear(e.target.value)}
+          >
+            <option>All years</option>
+            {years.map((y) => (
+              <option key={y}>{y}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by status"
+            className={status === "All statuses" ? "" : "filter-on"}
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+          >
+            <option>All statuses</option>
+            {STATUSES.map((s) => (
+              <option key={s}>{s}</option>
+            ))}
+          </select>
           <button onClick={() => downloadCsv(filtered)}>
             <Download />
             Export
           </button>
         </div>
-        <ReportTable rows={filtered} />
+        <ReportTable
+          rows={filtered}
+          emptyText="No reports match these filters."
+        />
       </div>
     </>
   );
 }
-function ReportTable({ rows }) {
+/** Shared submissions table. `onReview` is supplied by Central Office screens
+ * and turns each expanded row into a validation panel. */
+function ReportTable({ rows, onReview, emptyText = "No reports to show." }) {
   const [open, setOpen] = useState("");
+  if (!rows.length) return <p className="empty-state">{emptyText}</p>;
   return (
     <div className="table-scroll">
       <table>
@@ -1262,7 +1370,10 @@ function ReportTable({ rows }) {
                   <b>{r.id}</b>
                 </td>
                 <td>{r.region}</td>
-                <td>{r.quarter}</td>
+                <td>
+                  {r.quarter}
+                  {yearOf(r) && ` · ${yearOf(r)}`}
+                </td>
                 <td>{r.date}</td>
                 <td>
                   <Status s={r.status} />
@@ -1280,16 +1391,7 @@ function ReportTable({ rows }) {
               {open === r.id && (
                 <tr className="report-detail">
                   <td colSpan="6">
-                    <b>
-                      {r.id} · {r.region}
-                    </b>
-                    <p>
-                      Consultation held {r.date} for {r.quarter}. Current review
-                      status: {r.status}.
-                    </p>
-                    {r.submittedBy && (
-                      <small>Submitted by {r.submittedBy}</small>
-                    )}
+                    <ReportDetail report={r} onReview={onReview} />
                   </td>
                 </tr>
               )}
@@ -1300,25 +1402,252 @@ function ReportTable({ rows }) {
     </div>
   );
 }
-function Status({ s }) {
+/** Full Annex A record. Fields the caller did not load are simply omitted, so
+ * this renders for both the regional summary list and the Central Office view. */
+function ReportDetail({ report, onReview }) {
+  const sections = ANNEX_SECTIONS.filter(([k]) => report[k]),
+    signatories = SIGNATORIES.filter(([k]) => report[k]),
+    photos = String(report.photoFiles || "")
+      .split("\n")
+      .filter(Boolean);
   return (
-    <span className={"status " + s.toLowerCase().replaceAll(" ", "-")}>
-      {s}
+    <div className="annex-detail" id={`annex-${report.id}`}>
+      <div className="annex-head">
+        <div>
+          <b>
+            {report.id} · {report.region}
+          </b>
+          <p>
+            Consultation and Dialogue Report · {report.quarter}
+            {yearOf(report) && ` ${yearOf(report)}`} · held {report.date}
+          </p>
+          {report.submittedBy && (
+            <small>
+              Submitted by {report.submittedBy}
+              {report.participants
+                ? ` · ${Number(report.participants).toLocaleString()} participants`
+                : ""}
+            </small>
+          )}
+        </div>
+        <Status s={report.status} />
+      </div>
+      {report.remarks && (
+        <p className="annex-remarks">
+          <CircleAlert />
+          <span>
+            <b>Central Office remarks:</b> {report.remarks}
+          </span>
+        </p>
+      )}
+      {sections.length > 0 && (
+        <dl className="annex-sections">
+          {sections.map(([k, label]) => (
+            <div key={k}>
+              <dt>{label}</dt>
+              <dd>{report[k]}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {(report.attendanceFile || photos.length > 0) && (
+        <div className="annex-files">
+          {report.attendanceFile && (
+            <a
+              href={report.attendanceFile}
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              <Paperclip />
+              Attendance sheet
+            </a>
+          )}
+          {photos.map((url, i) => (
+            <a key={url} href={url} target="_blank" rel="noreferrer noopener">
+              <Image />
+              Photo {i + 1}
+            </a>
+          ))}
+        </div>
+      )}
+      {signatories.length > 0 && (
+        <div className="annex-signatories">
+          {signatories.map(([k, label]) => (
+            <div key={k}>
+              <small>{label}</small>
+              <b>{report[k]}</b>
+            </div>
+          ))}
+        </div>
+      )}
+      {onReview && <ReviewActions report={report} onReview={onReview} />}
+    </div>
+  );
+}
+/** Central Office validation controls for one submission. */
+function ReviewActions({ report, onReview }) {
+  const [remarks, setRemarks] = useState(report.remarks || ""),
+    [edited, setEdited] = useState(false),
+    [busy, setBusy] = useState(""),
+    [message, setMessage] = useState("");
+  // Re-seed from the stored record whenever the row is decided elsewhere.
+  useEffect(() => {
+    setRemarks(report.remarks || "");
+    setEdited(false);
+  }, [report.id, report.remarks]);
+  async function decide(status) {
+    // Remarks belong to the decision that produced them: a stored "needs
+    // revision" note must not follow the report into validation and get
+    // emailed back as if the office still had something to fix.
+    const outgoing = status === "Validated" && !edited ? "" : remarks;
+    setBusy(status);
+    setMessage("");
+    try {
+      await onReview(report.id, status, outgoing);
+      setRemarks(outgoing);
+      setEdited(false);
+      setMessage(`Marked ${status}.`);
+    } catch (e) {
+      setMessage(e.message);
+    } finally {
+      setBusy("");
+    }
+  }
+  return (
+    <div className="review-actions">
+      <label className="field">
+        <span>Remarks to the regional office</span>
+        <textarea
+          rows="2"
+          value={remarks}
+          onChange={(e) => {
+            setRemarks(e.target.value);
+            setEdited(true);
+          }}
+          placeholder="Required when returning a report for revision…"
+        />
+      </label>
+      <div className="review-buttons">
+        <button
+          type="button"
+          className="primary"
+          disabled={!!busy || report.status === "Validated"}
+          onClick={() => decide("Validated")}
+        >
+          <CheckCircle2 />
+          {busy === "Validated" ? "Saving…" : "Validate"}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          disabled={!!busy}
+          onClick={() => decide("Needs revision")}
+        >
+          <CircleAlert />
+          {busy === "Needs revision" ? "Saving…" : "Return for revision"}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          disabled={!!busy || report.status === "For review"}
+          onClick={() => decide("For review")}
+        >
+          <Clock3 />
+          Reset to for review
+        </button>
+      </div>
+      {message && <p className="notice">{message}</p>}
+    </div>
+  );
+}
+function Status({ s }) {
+  const label = String(s || "").trim() || "For review";
+  return (
+    <span className={"status " + label.toLowerCase().replaceAll(" ", "-")}>
+      {label}
     </span>
   );
 }
 function Admin({ tab, setTab, account }) {
   const [live, setLive] = useState(null),
     [loadError, setLoadError] = useState("");
+  // Reporting period drives the national panels; the submission filters below
+  // narrow the queue down to one CHEDRO, status or search term.
+  const [period, setPeriod] = useState({
+      quarter: quarterNow(),
+      year: yearNow(),
+    }),
+    [filters, setFilters] = useState({
+      region: "All CHEDROs",
+      status: "All statuses",
+      query: "",
+    });
   useEffect(() => {
     api({ action: "adminDashboard", accountToken: account.token })
       .then(setLive)
       .catch((e) => setLoadError(e.message));
   }, [account.token]);
-  const currentQuarter = quarterNow(),
+  const adminRows = live?.rows || [];
+  async function review(reference, status, remarks) {
+    await api({
+      action: "reviewSubmission",
+      accountToken: account.token,
+      reference,
+      status,
+      remarks,
+    });
+    setLive((prev) => ({
+      ...prev,
+      rows: (prev?.rows || []).map((r) =>
+        r.id === reference ? { ...r, status, remarks } : r,
+      ),
+    }));
+  }
+  const setPeriodField = (k, v) => setPeriod((p) => ({ ...p, [k]: v })),
+    setFilter = (k, v) => setFilters((f) => ({ ...f, [k]: v }));
+  const years = Array.from(
+      new Set(adminRows.map(yearOf).filter(Boolean).concat(yearNow())),
+    ).sort((a, b) => b.localeCompare(a)),
     total = regions.length,
-    adminRows = live?.rows || [],
-    periodRows = adminRows.filter((r) => r.quarter === currentQuarter),
+    // National panels: scoped to the reporting period only, so coverage and
+    // pending-office counts stay meaningful regardless of the region filter.
+    periodRows = adminRows.filter(
+      (r) =>
+        (period.quarter === "All quarters" || r.quarter === period.quarter) &&
+        (period.year === "All years" || yearOf(r) === period.year),
+    ),
+    periodLabel = `${period.quarter === "All quarters" ? "All quarters" : period.quarter}${
+      period.year === "All years" ? "" : ` · ${period.year}`
+    }`,
+    // Submission queue: the period rows narrowed by CHEDRO, status and search.
+    queryText = filters.query.trim().toLowerCase(),
+    filteredRows = periodRows.filter(
+      (r) =>
+        (filters.region === "All CHEDROs" || r.region === filters.region) &&
+        (filters.status === "All statuses" || r.status === filters.status) &&
+        (!queryText ||
+          [
+            r.id,
+            r.region,
+            r.quarter,
+            r.date,
+            r.status,
+            r.submittedBy,
+            r.initiatives,
+            r.student,
+            r.academic,
+            r.governance,
+            r.regionConcerns,
+            r.otherMatters,
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(queryText)),
+    ),
+    filtersActive =
+      filters.region !== "All CHEDROs" ||
+      filters.status !== "All statuses" ||
+      !!queryText,
     submittedRegions = new Set(periodRows.map((r) => r.region)),
     submitted = submittedRegions.size,
     coverage = Math.round((submitted / total) * 100),
@@ -1361,6 +1690,13 @@ function Admin({ tab, setTab, account }) {
     followUps = periodRows.filter((r) => r.status === "Needs revision").length,
     rate = (value) =>
       periodRows.length ? Math.round((value / periodRows.length) * 100) : 0,
+    // A period with no submissions is neither passing nor failing: without
+    // this guard "0 of 0" satisfies every check and the tab reads all-green.
+    check = (n) => ({
+      value: `${n}/${periodRows.length}`,
+      ok: periodRows.length > 0 && n === periodRows.length,
+      warn: periodRows.length > 0 && n !== periodRows.length,
+    }),
     regionStatus = (region) => {
       const reports = periodRows.filter((r) => r.region === region);
       if (!reports.length) return "Pending";
@@ -1384,20 +1720,43 @@ function Admin({ tab, setTab, account }) {
           <CalendarDays />
           <div>
             <small>Reporting period</small>
-            <b>
-              {currentQuarter} · {new Date().getFullYear()}
-            </b>
+            <div className="period-selects">
+              <select
+                aria-label="Quarter"
+                value={period.quarter}
+                onChange={(e) => setPeriodField("quarter", e.target.value)}
+              >
+                <option>All quarters</option>
+                {QUARTERS.map((q) => (
+                  <option key={q}>{q}</option>
+                ))}
+              </select>
+              <select
+                aria-label="Reporting year"
+                value={period.year}
+                onChange={(e) => setPeriodField("year", e.target.value)}
+              >
+                <option>All years</option>
+                {years.map((y) => (
+                  <option key={y}>{y}</option>
+                ))}
+              </select>
+            </div>
           </div>
-          <ChevronRight />
         </div>
         <button
           className="primary"
           onClick={() =>
-            downloadCsv(periodRows, "chedro-consolidated-report.csv")
+            downloadCsv(
+              filtersActive ? filteredRows : periodRows,
+              `chedro-consolidated-report-${(filtersActive ? filters.region : "all-chedros")
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, "-")}.csv`,
+            )
           }
         >
           <Download />
-          Export consolidated report
+          Export {filtersActive ? "filtered" : "consolidated"} report
         </button>
       </div>
       {loadError && <p className="notice error-notice">{loadError}</p>}
@@ -1464,12 +1823,27 @@ function Admin({ tab, setTab, account }) {
                 {regions.map((r) => {
                   const status = regionStatus(r);
                   const sent = status !== "Pending";
+                  const count = periodRows.filter(
+                    (row) => row.region === r,
+                  ).length;
                   return (
-                    <div className={sent ? "region sent" : "region"} key={r}>
+                    <button
+                      type="button"
+                      className={sent ? "region sent" : "region"}
+                      key={r}
+                      title={`Open ${r} submissions for ${periodLabel}`}
+                      onClick={() => {
+                        setFilter("region", r);
+                        setTab("submissions");
+                      }}
+                    >
                       <i>{sent ? <CheckCircle2 /> : <Clock3 />}</i>
                       <span>{r}</span>
-                      <small>{status}</small>
-                    </div>
+                      <small>
+                        {status}
+                        {count > 1 ? ` · ${count} reports` : ""}
+                      </small>
+                    </button>
                   );
                 })}
               </div>
@@ -1555,20 +1929,22 @@ function Admin({ tab, setTab, account }) {
           <div className="stats admin-stats">
             <Stat
               icon={<FileText />}
-              n={String(periodRows.length)}
+              n={String(filteredRows.length)}
               label="Received"
               tone="blue"
             />
             <Stat
               icon={<CheckCircle2 />}
-              n={String(validated)}
+              n={String(
+                filteredRows.filter((r) => r.status === "Validated").length,
+              )}
               label="Validated"
               tone="green"
             />
             <Stat
               icon={<Clock3 />}
               n={String(
-                periodRows.filter((r) => r.status === "For review").length,
+                filteredRows.filter((r) => r.status === "For review").length,
               )}
               label="For review"
               tone="amber"
@@ -1576,17 +1952,25 @@ function Admin({ tab, setTab, account }) {
             <Stat
               icon={<CircleAlert />}
               n={String(
-                periodRows.filter((r) => r.status === "Needs revision").length,
+                filteredRows.filter((r) => r.status === "Needs revision")
+                  .length,
               )}
               label="Needs revision"
               tone="purple"
             />
           </div>
-          <div className="panel">
+          <div className="panel reports">
             <div className="panel-head">
               <div>
-                <h3>Regional submissions</h3>
-                <p>Review, validate and follow up with reporting offices</p>
+                <h3>
+                  {filters.region === "All CHEDROs"
+                    ? "Regional submissions"
+                    : `${filters.region} submissions`}
+                </h3>
+                <p>
+                  {periodLabel} · review, validate and follow up with reporting
+                  offices
+                </p>
               </div>
               <div className="legend">
                 <i className="green-dot" />
@@ -1594,7 +1978,70 @@ function Admin({ tab, setTab, account }) {
                 For review
               </div>
             </div>
-            <ReportTable rows={periodRows} />
+            <div className="toolbar">
+              <div className="search">
+                <Search />
+                <input
+                  aria-label="Search submissions"
+                  value={filters.query}
+                  onChange={(e) => setFilter("query", e.target.value)}
+                  placeholder="Search reference, office or reported concern…"
+                />
+              </div>
+              <select
+                aria-label="Filter by CHED Regional Office"
+                className={
+                  filters.region === "All CHEDROs" ? "" : "filter-on"
+                }
+                value={filters.region}
+                onChange={(e) => setFilter("region", e.target.value)}
+              >
+                <option>All CHEDROs</option>
+                {regions.map((r) => (
+                  <option key={r}>{r}</option>
+                ))}
+              </select>
+              <select
+                aria-label="Filter by status"
+                className={
+                  filters.status === "All statuses" ? "" : "filter-on"
+                }
+                value={filters.status}
+                onChange={(e) => setFilter("status", e.target.value)}
+              >
+                <option>All statuses</option>
+                {STATUSES.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </select>
+              {filtersActive && (
+                <button
+                  onClick={() =>
+                    setFilters({
+                      region: "All CHEDROs",
+                      status: "All statuses",
+                      query: "",
+                    })
+                  }
+                >
+                  <X />
+                  Clear
+                </button>
+              )}
+              <button onClick={() => downloadCsv(filteredRows)}>
+                <Download />
+                Export
+              </button>
+            </div>
+            <ReportTable
+              rows={filteredRows}
+              onReview={review}
+              emptyText={
+                filtersActive
+                  ? "No submissions match these filters."
+                  : `No submissions recorded for ${periodLabel}.`
+              }
+            />
           </div>
         </>
       )}
@@ -1732,33 +2179,23 @@ function Admin({ tab, setTab, account }) {
               </div>
               <CheckRow
                 label="Consultation date and quarter"
-                value={`${dateCount}/${periodRows.length}`}
-                ok={dateCount === periodRows.length}
-                warn={dateCount !== periodRows.length}
+                {...check(dateCount)}
               />
               <CheckRow
                 label="Four agenda categories completed"
-                value={`${agendaComplete}/${periodRows.length}`}
-                ok={agendaComplete === periodRows.length}
-                warn={agendaComplete !== periodRows.length}
+                {...check(agendaComplete)}
               />
               <CheckRow
                 label="Attendance sheet attached"
-                value={`${attendanceCount}/${periodRows.length}`}
-                ok={attendanceCount === periodRows.length}
-                warn={attendanceCount !== periodRows.length}
+                {...check(attendanceCount)}
               />
               <CheckRow
                 label="Photo documentation attached"
-                value={`${photoCount}/${periodRows.length}`}
-                ok={photoCount === periodRows.length}
-                warn={photoCount !== periodRows.length}
+                {...check(photoCount)}
               />
               <CheckRow
                 label="All four signatories supplied"
-                value={`${signatoriesComplete}/${periodRows.length}`}
-                ok={signatoriesComplete === periodRows.length}
-                warn={signatoriesComplete !== periodRows.length}
+                {...check(signatoriesComplete)}
               />
             </div>
             <div className="panel">
@@ -1774,7 +2211,7 @@ function Admin({ tab, setTab, account }) {
                   <div className="pending-row" key={r}>
                     <div>
                       <b>{r}</b>
-                      <small>No submission received for {currentQuarter}</small>
+                      <small>No submission received for {periodLabel}</small>
                     </div>
                     <span>Follow up</span>
                   </div>

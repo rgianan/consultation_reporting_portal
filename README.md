@@ -14,7 +14,11 @@ Production portal: <https://ched-consultation-reporting-portal.vercel.app/>
 - A single CHEDRO User role plus Central Office administration
 - Official-email recovery support
 - Google Sheets-backed submission records and audit trail
-- Admin coverage, validation queue, participant totals, concern totals, region status, export affordance, and cross-CHEDRO thematic summary
+- Admin coverage, participant totals, concern totals, region status, and cross-CHEDRO thematic summary
+- Central Office review queue filtered by CHED Regional Office, quarter, reporting year, status or free-text search, with one-click drill-down from the national coverage grid
+- Full Annex A record on every submission: the four agenda discussions, region-specific concerns, other matters, linked attendance sheet and photos, and all four signatories
+- Central Office validation: mark a report Validated or Needs revision with remarks, emailed to the submitting office and shown back in its regional history
+- CSV export of every Annex A field for the current filter, not just reference numbers
 - Responsive layouts for desktop, tablet and mobile
 
 ## Run locally
