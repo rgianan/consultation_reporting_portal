@@ -32,6 +32,10 @@ Production portal: <https://ched-consultation-reporting-portal.vercel.app/>
 7. Deploy the script as a Web App that executes as the owner and allows access by **Anyone**. Portal access remains protected by the approved-account login and official-domain checks.
 8. CHEDRO personnel create their own account and select their regional office. A Central Administrator verifies and approves the request before the account can sign in.
 
+### Updating an already-deployed script
+
+Saving the Apps Script editor is **not** enough: the `/exec` URL keeps serving the last published version. After pasting a new `Code.gs`, choose **Deploy → Manage deployments → Edit (pencil) → Version: New version → Deploy**. Keeping the same deployment preserves the existing `/exec` URL, so `VITE_GAS_WEB_APP_URL` does not change. Skipping this step leaves newly added actions returning `Unsupported action.` to the portal.
+
 Registration requests remain inactive until Central Office approval, sessions are role-checked by the backend, and each report stores the submitting user's name, email, role, and approved regional office for auditability.
 
 ## Deploy to Vercel

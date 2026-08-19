@@ -345,21 +345,46 @@ function approveAccount_(p) {
     admin.email,
     email + " / " + f.row.Region,
   );
-  MailApp.sendEmail({
-    to: email,
-    subject:
+  // The decision is already written. A mail failure (quota, bad address) must
+  // not fail the request, or the account ends up approved while the admin is
+  // told it was not - so report it back instead of throwing.
+  var decision = approve ? "Account approved." : "Account rejected.",
+    notice = notify_(
+      email,
       "CHED Office of Student Development and Services account " +
-      (approve ? "approved" : "reviewed"),
-    htmlBody: approve
-      ? "<p>Your account for <b>" +
-        f.row.Region +
-        "</b> has been approved. You may now sign in.</p>"
-      : "<p>Your account request could not be approved. Contact Central Office if you need assistance.</p>",
-  });
+        (approve ? "approved" : "reviewed"),
+      approve
+        ? "<p>Your account for <b>" +
+            f.row.Region +
+            "</b> has been approved. You may now sign in.</p>"
+        : "<p>Your account request could not be approved. Contact Central Office if you need assistance.</p>",
+      admin.email,
+    );
   return out_({
     ok: true,
-    message: approve ? "Account approved." : "Account rejected.",
+    notified: notice.sent,
+    message: notice.sent ? decision : decision + " " + notice.warning,
   });
+}
+/** Send a notification without letting a mail failure undo work already
+ * committed to the sheet. Returns whether it went out. */
+function notify_(to, subject, htmlBody, actorEmail) {
+  try {
+    MailApp.sendEmail({ to: to, subject: subject, htmlBody: htmlBody });
+    return { sent: true, warning: "" };
+  } catch (mailErr) {
+    var reason = mailErr && mailErr.message ? mailErr.message : String(mailErr);
+    // The audit write is best-effort too: letting it throw here would undo the
+    // very guarantee this helper exists to provide.
+    try {
+      audit_("notification_failed", "", actorEmail || "", to + " / " + reason);
+    } catch (auditErr) {}
+    return {
+      sent: false,
+      warning:
+        "The notification email to " + to + " could not be sent: " + reason,
+    };
+  }
 }
 function listAccounts_(p) {
   accountSession_(p.accountToken, ["central_admin"]);
@@ -563,32 +588,35 @@ function reviewSubmission_(p) {
           admin.email,
           status + (remarks ? " / " + remarks : ""),
         );
-        var recipient = email_(v[i][18]);
+        var recipient = email_(v[i][18]),
+          notice = { sent: true, warning: "" };
         if (recipient && status !== "For review")
-          try {
-            MailApp.sendEmail({
-              to: recipient,
-              subject:
-                "Consultation report " + reference + " marked " + status,
-              htmlBody:
-                "<p>Your consultation and dialogue report <b>" +
-                reference +
-                "</b> for " +
-                String(v[i][2]) +
-                " (" +
-                String(v[i][3]) +
-                ") has been marked <b>" +
-                status +
-                "</b> by the Central Office.</p>" +
-                (remarks ? "<p>Remarks: " + remarks + "</p>" : ""),
-            });
-          } catch (mailErr) {}
+          notice = notify_(
+            recipient,
+            "Consultation report " + reference + " marked " + status,
+            "<p>Your consultation and dialogue report <b>" +
+              reference +
+              "</b> for " +
+              String(v[i][2]) +
+              " (" +
+              String(v[i][3]) +
+              ") has been marked <b>" +
+              status +
+              "</b> by the Central Office.</p>" +
+              (remarks ? "<p>Remarks: " + remarks + "</p>" : ""),
+            admin.email,
+          );
         return out_({
           ok: true,
           reference: reference,
           status: status,
           remarks: remarks,
-          message: "Report marked " + status + ".",
+          notified: notice.sent,
+          message:
+            "Report marked " +
+            status +
+            "." +
+            (notice.sent ? "" : " " + notice.warning),
         });
       }
     throw new Error("Report " + reference + " was not found.");

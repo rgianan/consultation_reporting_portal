@@ -1489,7 +1489,8 @@ function ReviewActions({ report, onReview }) {
   const [remarks, setRemarks] = useState(report.remarks || ""),
     [edited, setEdited] = useState(false),
     [busy, setBusy] = useState(""),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [messageWarn, setMessageWarn] = useState(false);
   // Re-seed from the stored record whenever the row is decided elsewhere.
   useEffect(() => {
     setRemarks(report.remarks || "");
@@ -1502,13 +1503,16 @@ function ReviewActions({ report, onReview }) {
     const outgoing = status === "Validated" && !edited ? "" : remarks;
     setBusy(status);
     setMessage("");
+    setMessageWarn(false);
     try {
-      await onReview(report.id, status, outgoing);
+      const d = await onReview(report.id, status, outgoing);
       setRemarks(outgoing);
       setEdited(false);
-      setMessage(`Marked ${status}.`);
+      setMessage(d?.message || `Marked ${status}.`);
+      setMessageWarn(d?.notified === false);
     } catch (e) {
       setMessage(e.message);
+      setMessageWarn(true);
     } finally {
       setBusy("");
     }
@@ -1556,7 +1560,11 @@ function ReviewActions({ report, onReview }) {
           Reset to for review
         </button>
       </div>
-      {message && <p className="notice">{message}</p>}
+      {message && (
+        <p className={messageWarn ? "notice error-notice" : "notice"}>
+          {message}
+        </p>
+      )}
     </div>
   );
 }
@@ -1589,7 +1597,7 @@ function Admin({ tab, setTab, account }) {
   }, [account.token]);
   const adminRows = live?.rows || [];
   async function review(reference, status, remarks) {
-    await api({
+    const d = await api({
       action: "reviewSubmission",
       accountToken: account.token,
       reference,
@@ -1602,6 +1610,7 @@ function Admin({ tab, setTab, account }) {
         r.id === reference ? { ...r, status, remarks } : r,
       ),
     }));
+    return d;
   }
   const setPeriodField = (k, v) => setPeriod((p) => ({ ...p, [k]: v })),
     setFilter = (k, v) => setFilters((f) => ({ ...f, [k]: v }));
@@ -2260,7 +2269,10 @@ function CheckRow({ label, value, ok, warn }) {
 }
 function UserAccess({ account }) {
   const [users, setUsers] = useState([]),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    // A decision can succeed while its notification email fails; that needs to
+    // read as a warning, not as a plain confirmation.
+    [messageWarn, setMessageWarn] = useState(false);
   useEffect(() => {
     api({ action: "listAccounts", accountToken: account.token })
       .then((d) =>
@@ -2274,11 +2286,14 @@ function UserAccess({ account }) {
           ]),
         ),
       )
-      .catch((e) => setMessage(e.message));
+      .catch((e) => {
+        setMessage(e.message);
+        setMessageWarn(true);
+      });
   }, [account.token]);
   async function decide(email, approve) {
     try {
-      await api({
+      const d = await api({
         action: "approveAccount",
         accountToken: account.token,
         email,
@@ -2291,9 +2306,13 @@ function UserAccess({ account }) {
             : u,
         ),
       );
-      setMessage(approve ? "Account approved." : "Account rejected.");
+      setMessage(
+        d.message || (approve ? "Account approved." : "Account rejected."),
+      );
+      setMessageWarn(d.notified === false);
     } catch (e) {
       setMessage(e.message);
+      setMessageWarn(true);
     }
   }
   return (
@@ -2328,7 +2347,11 @@ function UserAccess({ account }) {
           tone="purple"
         />
       </div>
-      {message && <p className="notice">{message}</p>}
+      {message && (
+        <p className={messageWarn ? "notice error-notice" : "notice"}>
+          {message}
+        </p>
+      )}
       <div className="panel users-panel">
         <div className="panel-head">
           <div>
