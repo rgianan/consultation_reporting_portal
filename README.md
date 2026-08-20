@@ -23,14 +23,39 @@ Production portal: <https://ched-consultation-reporting-portal.vercel.app/>
 
 ## Run locally
 
-1. Run `npm install` and `npm run dev`.
-2. Copy `.env.example` to `.env` and set the deployed Apps Script URL.
-3. Create a private Google Drive folder for attendance sheets and consultation photos.
-4. Paste `google-apps-script/Code.gs` into an Apps Script project attached to a Google Sheet.
-5. In **Apps Script → Project Settings → Script properties**, add `SPREADSHEET_ID`, `DRIVE_FOLDER_ID`, `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_PASSWORD`, and optionally `INITIAL_ADMIN_NAME`.
-6. Run `setupPortal()` once, then run `seedAdmin()` once. The initial password property is deleted after the administrator is created.
-7. Deploy the script as a Web App that executes as the owner and allows access by **Anyone**. Portal access remains protected by the approved-account login and official-domain checks.
-8. CHEDRO personnel create their own account and select their regional office. A Central Administrator verifies and approves the request before the account can sign in.
+Run `npm install` then `npm run dev`. With no `.env` file the portal starts against
+a built-in mock backend and is immediately usable — no Google account, no deployed
+script, and nothing written to any Sheet:
+
+| Sign in as | Email | Password |
+| --- | --- | --- |
+| Central Office | `admin@ched.gov.ph` | `portal-admin-2026` |
+| Region VII officer | `rdelacruz@ched.gov.ph` | `region7-user-2026` |
+
+It seeds four reports across three regions and one pending account request
+(`jcruz@ched.gov.ph`, CARAGA) so the approval and validation queues have something
+in them. Verification codes and notification emails are printed to the terminal
+instead of being sent. State is in memory: restarting `npm run dev` resets it.
+
+The mock lives in `dev/mock-backend.js`, is wired up by `vite.config.js`, and is
+scoped to `apply: "serve"` — it is never part of a production build.
+
+### Running against a real backend
+
+**Localhost does not mean local data.** The dev server only serves the UI; every
+request goes to whatever `VITE_GAS_WEB_APP_URL` points at. Setting it to the
+production `/exec` URL means accounts you create and reports you submit are written
+to the live Google Sheet. For hands-on testing against real Apps Script, deploy a
+second script bound to a separate Sheet and Drive folder and point `.env` at that.
+
+## Connect the Google backend
+1. Create a private Google Drive folder for attendance sheets and consultation photos.
+2. Paste `google-apps-script/Code.gs` into an Apps Script project attached to a Google Sheet.
+3. In **Apps Script → Project Settings → Script properties**, add `SPREADSHEET_ID`, `DRIVE_FOLDER_ID`, `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_PASSWORD`, and optionally `INITIAL_ADMIN_NAME`.
+4. Run `setupPortal()` once, then run `seedAdmin()` once. The initial password property is deleted after the administrator is created.
+5. Deploy the script as a Web App that executes as the owner and allows access by **Anyone**. Portal access remains protected by the approved-account login and official-domain checks.
+6. Copy that `/exec` URL into `.env` as `VITE_GAS_WEB_APP_URL`, which also switches the dev server off the mock backend.
+7. CHEDRO personnel create their own account and select their regional office. A Central Administrator verifies and approves the request before the account can sign in.
 
 ### Updating an already-deployed script
 
