@@ -77,7 +77,7 @@ second script bound to a separate Sheet and Drive folder and point `.env` at tha
 ## Connect the Google backend
 1. Create a private Google Drive folder for attendance sheets and consultation photos.
 2. Paste `google-apps-script/Code.gs` into an Apps Script project attached to a Google Sheet.
-3. In **Apps Script → Project Settings → Script properties**, add `SPREADSHEET_ID`, `DRIVE_FOLDER_ID`, `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_PASSWORD`, and optionally `INITIAL_ADMIN_NAME`.
+3. In **Apps Script → Project Settings → Script properties**, add `SPREADSHEET_ID`, `DRIVE_FOLDER_ID`, `INITIAL_ADMIN_EMAIL`, `INITIAL_ADMIN_PASSWORD`, and optionally `INITIAL_ADMIN_NAME` and `PORTAL_URL`. `PORTAL_URL` is the address the "Open the portal" button in notification emails points at; it defaults to the production Vercel URL.
 4. Run `setupPortal()` once, then run `seedAdmin()` once. The initial password property is deleted after the administrator is created.
 5. Deploy the script as a Web App that executes as the owner and allows access by **Anyone**. Portal access remains protected by the approved-account login and official-domain checks.
 6. Copy that `/exec` URL into `.env` as `VITE_GAS_WEB_APP_URL`, which also switches the dev server off the mock backend.

@@ -4,7 +4,8 @@
  */
 var OTP_TTL = 600,
   SESSION_TTL = 7200,
-  MAX_ATTEMPTS = 5;
+  MAX_ATTEMPTS = 5,
+  PORTAL_NAME = "CHED-OSDS Consultation & Dialogue Reporting Portal";
 function doPost(e) {
   try {
     var p = JSON.parse((e.postData && e.postData.contents) || "{}");
@@ -53,15 +54,31 @@ function requestOtp_(p) {
     OTP_TTL,
   );
   c.put(cd, "1", 60);
-  MailApp.sendEmail({
-    to: email,
-    subject:
-      "CHED Office of Student Development and Services verification code",
-    htmlBody:
-      '<p>Your verification code is:</p><p style="font-size:28px;font-weight:bold;letter-spacing:6px">' +
-      code +
-      "</p><p>This code expires in 10 minutes. Do not share it.</p>",
-  });
+  // Unlike the other notifications this one is the whole point of the request,
+  // so a send failure must surface as an error rather than a quiet warning.
+  var sent = notify_(
+    email,
+    PORTAL_NAME + ": Password reset code",
+    emailBody_({
+      heading: "Your verification code",
+      intro:
+        "Use the code below to reset the password for your portal account.",
+      code: code,
+      details: [
+        ["Account", email],
+        ["Requested", stamp_()],
+        ["Valid for", "10 minutes"],
+      ],
+      next:
+        "Do not share this code with anyone. If you did not request a password reset, you can ignore this email and your password will stay unchanged.",
+      cta: false,
+    }),
+    email,
+  );
+  if (!sent.sent)
+    throw new Error(
+      "The verification code could not be emailed. Please try again shortly.",
+    );
   return out_({
     ok: true,
     otpRequestId: id,
@@ -351,13 +368,40 @@ function approveAccount_(p) {
   var decision = approve ? "Account approved." : "Account rejected.",
     notice = notify_(
       email,
-      "CHED Office of Student Development and Services account " +
-        (approve ? "approved" : "reviewed"),
+      PORTAL_NAME + ": " + (approve ? "Account approved" : "Account request reviewed"),
       approve
-        ? "<p>Your account for <b>" +
-            f.row.Region +
-            "</b> has been approved. You may now sign in.</p>"
-        : "<p>Your account request could not be approved. Contact Central Office if you need assistance.</p>",
+        ? emailBody_({
+            heading: "Your portal account has been approved",
+            intro:
+              "Central Office has verified your registration. You can now sign in and file Consultation and Dialogue Reports for your regional office.",
+            details: [
+              ["Name", f.row.Display_Name],
+              ["Regional office", f.row.Region],
+              ["Sign in with", email],
+              ["Approved", stamp_()],
+            ],
+            callout: {
+              title: "Reporting requirement",
+              body:
+                "One Consultation and Dialogue Report (Annex A) is required each quarter, with the attendance sheet and photo documentation attached.",
+            },
+            next:
+              "Your regional office is locked to this account and is applied automatically to every report you submit. If the office shown above is not correct, contact Central Office before filing anything.",
+          })
+        : emailBody_({
+            heading: "Your portal account request was not approved",
+            intro:
+              "Central Office has reviewed your registration and was unable to approve it.",
+            details: [
+              ["Name", f.row.Display_Name],
+              ["Office requested", f.row.Region],
+              ["Email", email],
+              ["Reviewed", stamp_()],
+            ],
+            next:
+              "This usually means the regional office selected did not match our records. Contact Central Office to confirm your assignment, then register again with the correct office.",
+            cta: false,
+          }),
       admin.email,
     );
   return out_({
@@ -367,10 +411,16 @@ function approveAccount_(p) {
   });
 }
 /** Send a notification without letting a mail failure undo work already
- * committed to the sheet. Returns whether it went out. */
-function notify_(to, subject, htmlBody, actorEmail) {
+ * committed to the sheet. Returns whether it went out.
+ * `content` is the { html, text } pair produced by emailBody_(). */
+function notify_(to, subject, content, actorEmail) {
   try {
-    MailApp.sendEmail({ to: to, subject: subject, htmlBody: htmlBody });
+    MailApp.sendEmail({
+      to: to,
+      subject: subject,
+      body: content.text,
+      htmlBody: content.html,
+    });
     return { sent: true, warning: "" };
   } catch (mailErr) {
     var reason = mailErr && mailErr.message ? mailErr.message : String(mailErr);
@@ -385,6 +435,128 @@ function notify_(to, subject, htmlBody, actorEmail) {
         "The notification email to " + to + " could not be sent: " + reason,
     };
   }
+}
+/** Every value interpolated into an email passes through this. text_() already
+ * strips angle brackets on the way in, but escaping at render time keeps the
+ * markup correct for ampersands and quotes too. */
+function esc_(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function portalUrl_() {
+  return (
+    PropertiesService.getScriptProperties().getProperty("PORTAL_URL") ||
+    "https://ched-consultation-reporting-portal.vercel.app/"
+  );
+}
+function stamp_() {
+  return Utilities.formatDate(
+    new Date(),
+    Session.getScriptTimeZone(),
+    "d MMMM yyyy 'at' h:mm a",
+  );
+}
+/**
+ * Shared shell for every portal notification, returning { html, text } so
+ * recipients on plain-text clients get a readable message too.
+ *
+ * o.heading  short title line
+ * o.intro    one sentence of context (plain text)
+ * o.details  [[label, value], ...] summary rows; blank values are dropped
+ * o.code     optional large verification code
+ * o.callout  optional { title, body, tone: "warn" | "info" } highlighted block
+ * o.next     what the recipient should do (plain text)
+ * o.cta      whether to show the "Open the portal" button
+ */
+function emailBody_(o) {
+  var url = portalUrl_(),
+    details = (o.details || []).filter(function (d) {
+      return d[1] !== "" && d[1] != null;
+    }),
+    warn = o.callout && o.callout.tone === "warn",
+    rows = details
+      .map(function (d) {
+        return (
+          '<tr><td style="padding:5px 18px 5px 0;color:#5b6675;font-size:13px;' +
+          'vertical-align:top;white-space:nowrap">' +
+          esc_(d[0]) +
+          '</td><td style="padding:5px 0;color:#172036;font-size:13px;' +
+          'font-weight:600">' +
+          esc_(d[1]) +
+          "</td></tr>"
+        );
+      })
+      .join("");
+  var html =
+    '<div style="font-family:Arial,Helvetica,sans-serif;color:#172036;' +
+    'max-width:560px;line-height:1.6">' +
+    '<p style="margin:0 0 4px;font-size:11px;letter-spacing:.08em;' +
+    'text-transform:uppercase;color:#5b6675">' +
+    esc_(PORTAL_NAME) +
+    "</p>" +
+    '<h2 style="margin:0 0 14px;font-size:18px;color:#102b54">' +
+    esc_(o.heading) +
+    "</h2>" +
+    '<p style="margin:0 0 16px;font-size:14px">' +
+    esc_(o.intro) +
+    "</p>" +
+    (rows
+      ? '<table style="border-collapse:collapse;margin:0 0 18px">' +
+        rows +
+        "</table>"
+      : "") +
+    (o.code
+      ? '<p style="margin:0 0 18px;font-size:30px;font-weight:700;' +
+        'letter-spacing:8px;color:#102b54">' +
+        esc_(o.code) +
+        "</p>"
+      : "") +
+    (o.callout
+      ? '<div style="border-left:3px solid ' +
+        (warn ? "#c9553d" : "#2e609d") +
+        ";background:" +
+        (warn ? "#fdf3f1" : "#f1f6fc") +
+        ';padding:12px 14px;margin:0 0 18px">' +
+        '<p style="margin:0 0 5px;font-size:12px;font-weight:700;color:' +
+        (warn ? "#8d3226" : "#245d9c") +
+        '">' +
+        esc_(o.callout.title) +
+        '</p><p style="margin:0;font-size:13px;color:' +
+        (warn ? "#5a2b22" : "#22314a") +
+        '">' +
+        esc_(o.callout.body) +
+        "</p></div>"
+      : "") +
+    (o.next
+      ? '<p style="margin:0 0 20px;font-size:14px">' + esc_(o.next) + "</p>"
+      : "") +
+    (o.cta === false
+      ? ""
+      : '<p style="margin:0 0 22px"><a href="' +
+        esc_(url) +
+        '" style="background:#102b54;color:#ffffff;text-decoration:none;' +
+        'font-size:13px;font-weight:700;padding:11px 20px;border-radius:6px;' +
+        'display:inline-block">Open the portal</a></p>') +
+    '<p style="margin:0;font-size:11px;color:#7d8795">Automated message from ' +
+    "the " +
+    esc_(PORTAL_NAME) +
+    ". Please do not reply to this email.</p></div>";
+  var lines = [PORTAL_NAME.toUpperCase(), "", o.heading, "", o.intro, ""];
+  details.forEach(function (d) {
+    lines.push("  " + d[0] + ": " + d[1]);
+  });
+  if (details.length) lines.push("");
+  if (o.code) lines.push("  " + o.code, "");
+  if (o.callout) lines.push(o.callout.title, o.callout.body, "");
+  if (o.next) lines.push(o.next, "");
+  if (o.cta !== false) lines.push(url, "");
+  lines.push(
+    "Automated message from the " + PORTAL_NAME + ". Please do not reply.",
+  );
+  return { html: html, text: lines.join("\n") };
 }
 function listAccounts_(p) {
   accountSession_(p.accountToken, ["central_admin"]);
@@ -589,21 +761,49 @@ function reviewSubmission_(p) {
           status + (remarks ? " / " + remarks : ""),
         );
         var recipient = email_(v[i][18]),
+          revised = status === "Needs revision",
           notice = { sent: true, warning: "" };
         if (recipient && status !== "For review")
           notice = notify_(
             recipient,
-            "Consultation report " + reference + " marked " + status,
-            "<p>Your consultation and dialogue report <b>" +
-              reference +
-              "</b> for " +
-              String(v[i][2]) +
+            PORTAL_NAME +
+              ": " +
+              (revised
+                ? "Report returned for revision"
+                : "Report validated") +
               " (" +
-              String(v[i][3]) +
-              ") has been marked <b>" +
-              status +
-              "</b> by the Central Office.</p>" +
-              (remarks ? "<p>Remarks: " + remarks + "</p>" : ""),
+              reference +
+              ")",
+            emailBody_({
+              heading: revised
+                ? "Consultation report returned for revision"
+                : "Consultation report validated",
+              intro: revised
+                ? "Central Office has reviewed the report below and is asking your office to correct it."
+                : "Central Office has reviewed and validated the report below.",
+              details: [
+                ["Reference", reference],
+                ["Regional office", v[i][2]],
+                ["Quarter", v[i][3]],
+                ["Consultation date", v[i][4]],
+                ["Participants", v[i][5]],
+                ["Submitted by", v[i][19]],
+                ["Status", status],
+                ["Reviewed", stamp_()],
+              ],
+              callout: remarks
+                ? {
+                    title: revised
+                      ? "What needs to be corrected"
+                      : "Remarks from Central Office",
+                    body: remarks,
+                    tone: revised ? "warn" : "info",
+                  }
+                : null,
+              next: revised
+                ? "Sign in to read the remarks in full, then submit a corrected report for this quarter."
+                : "No further action is required for this quarter.",
+            }),
             admin.email,
           );
         return out_({

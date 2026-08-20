@@ -33,6 +33,7 @@ const REGIONS = [
   "CARAGA",
 ];
 const STATUSES = ["For review", "Validated", "Needs revision"];
+const PORTAL_NAME = "CHED-OSDS Consultation & Dialogue Reporting Portal";
 const ADMIN = { email: "admin@ched.gov.ph", password: "portal-admin-2026" };
 const OFFICER = {
   email: "rdelacruz@ched.gov.ph",
@@ -277,11 +278,22 @@ const actions = {
     const decision = approve ? "Account approved." : "Account rejected.";
     const notice = mail(
       u.email,
-      "CHED Office of Student Development and Services account " +
-        (approve ? "approved" : "reviewed"),
+      PORTAL_NAME +
+        ": " +
+        (approve ? "Account approved" : "Account request reviewed"),
       approve
-        ? "Your account for " + u.region + " has been approved. You may now sign in."
-        : "Your account request could not be approved.",
+        ? [
+            "Your portal account has been approved.",
+            "  Name: " + u.name,
+            "  Regional office: " + u.region,
+            "  Sign in with: " + u.email,
+            "One Annex A report is required each quarter.",
+          ].join("\n    ")
+        : [
+            "Your portal account request was not approved.",
+            "  Office requested: " + u.region,
+            "Contact Central Office, then register again.",
+          ].join("\n    "),
     );
     return {
       notified: notice.sent,
@@ -383,17 +395,26 @@ const actions = {
     if (r.submittedByEmail && status !== "For review")
       notice = mail(
         r.submittedByEmail,
-        "Consultation report " + reference + " marked " + status,
-        "Your report " +
-          reference +
-          " for " +
-          r.region +
+        PORTAL_NAME +
+          ": " +
+          (status === "Needs revision"
+            ? "Report returned for revision"
+            : "Report validated") +
           " (" +
-          r.quarter +
-          ") has been marked " +
-          status +
-          "." +
-          (remarks ? " Remarks: " + remarks : ""),
+          reference +
+          ")",
+        [
+          status === "Needs revision"
+            ? "Central Office returned this report for revision."
+            : "Central Office validated this report.",
+          "  Reference: " + reference,
+          "  Regional office: " + r.region,
+          "  Quarter: " + r.quarter,
+          "  Consultation date: " + r.date,
+          "  Status: " + status,
+        ]
+          .concat(remarks ? ["  Remarks: " + remarks] : [])
+          .join("\n    "),
       );
     return {
       reference,
@@ -412,7 +433,13 @@ const actions = {
     const id = newToken(),
       code = String(Math.floor(100000 + Math.random() * 900000));
     db.otps.set(id, { email, code });
-    mail(email, "Verification code", "Your verification code is " + code + ".");
+    mail(
+      email,
+      PORTAL_NAME + ": Password reset code",
+      "Your verification code is " +
+        code +
+        ", valid for 10 minutes.\n    Do not share it. Ignore this email if you did not request a reset.",
+    );
     return {
       otpRequestId: id,
       message: "Verification code sent to " + email + ".",
