@@ -33,11 +33,16 @@ const REGIONS = [
   "CARAGA",
 ];
 const STATUSES = ["For review", "Validated", "Needs revision"];
-
 const ADMIN = { email: "admin@ched.gov.ph", password: "portal-admin-2026" };
 const OFFICER = {
   email: "rdelacruz@ched.gov.ph",
   password: "region7-user-2026",
+};
+// Seeded unapproved, and its region (CARAGA) owns a "Needs revision" report --
+// approving it is the quickest way to exercise the regional revision flow.
+const PENDING = {
+  email: "jcruz@ched.gov.ph",
+  password: "pending-user-2026",
 };
 
 /** Mirrors text_() in Code.gs: strips angle brackets, trims, caps length. */
@@ -116,8 +121,8 @@ function seed() {
         status: "Approved",
       },
       {
-        email: "jcruz@ched.gov.ph",
-        password: "pending-user-2026",
+        email: PENDING.email,
+        password: PENDING.password,
         name: "Jane Cruz",
         role: "chedro_user",
         region: "CARAGA",
@@ -452,7 +457,9 @@ function banner() {
       "",
       "    Central Office  " + ADMIN.email + "  /  " + ADMIN.password,
       "    Region VII      " + OFFICER.email + "  /  " + OFFICER.password,
-      "    Pending request jcruz@ched.gov.ph (CARAGA), awaiting approval",
+      "    CARAGA          " + PENDING.email + "  /  " + PENDING.password,
+      "                    unapproved on purpose - approve it from Central",
+      "                    Office to test the regional revision flow",
       "  " + rule,
       "",
     ].join("\n"),

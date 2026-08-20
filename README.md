@@ -31,14 +31,40 @@ script, and nothing written to any Sheet:
 | --- | --- | --- |
 | Central Office | `admin@ched.gov.ph` | `portal-admin-2026` |
 | Region VII officer | `rdelacruz@ched.gov.ph` | `region7-user-2026` |
+| CARAGA officer | `jcruz@ched.gov.ph` | `pending-user-2026` |
 
-It seeds four reports across three regions and one pending account request
-(`jcruz@ched.gov.ph`, CARAGA) so the approval and validation queues have something
-in them. Verification codes and notification emails are printed to the terminal
-instead of being sent. State is in memory: restarting `npm run dev` resets it.
+The CARAGA account is seeded **unapproved** on purpose, and CARAGA owns the one
+seeded report in `Needs revision`. Approving it from Central Office and then
+signing in as it walks the whole regional path in about a minute: blocked login →
+approval → revision banner → remarks.
+
+Four reports are seeded across three regions and quarters, so the coverage grid,
+validation queue and approval queue all have content. Verification codes and
+notification emails are printed to the terminal instead of being sent. State is in
+memory: restarting `npm run dev` resets everything to seed.
 
 The mock lives in `dev/mock-backend.js`, is wired up by `vite.config.js`, and is
 scoped to `apply: "serve"` — it is never part of a production build.
+
+### Testing as a regional office
+
+`sessionStorage` is per tab, so you can hold two roles at once — open
+`localhost:5173` in one tab as Central Office and a second tab as a CHEDRO user,
+and refresh either to see the other's changes.
+
+1. **Sign in as Region VII** (`rdelacruz@…`) to land on a populated workspace: three
+   reports, the quarterly timeline, and a current-quarter card.
+2. **File a report** with *New report*. The office is locked to your account, so only
+   the quarter and date are yours to pick. Any small PDF and any image satisfy the
+   attendance and photo steps — the mock records filenames and discards the bytes.
+3. **Switch to Central Office**, open *Submissions*, filter to that CHEDRO, expand
+   the row and *Return for revision* with remarks.
+4. **Back on the regional tab**, refresh: the red banner appears and the remarks
+   show inside the report. Validate it from Central Office and the banner clears.
+
+To test a region that has no seed data, register a fresh account for it from
+*Create account*, then approve it as Central Office. To pre-seed one instead, add
+it to the `users` array in `seed()` in `dev/mock-backend.js`.
 
 ### Running against a real backend
 
