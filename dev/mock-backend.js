@@ -33,6 +33,15 @@ const REGIONS = [
   "CARAGA",
 ];
 const STATUSES = ["For review", "Validated", "Needs revision"];
+const SUPERSEDED = "Superseded";
+/** Reporting year of a seeded or submitted row, matching year_() in Code.gs. */
+const yearOfRow = (r) =>
+  (String(r.date || "").match(/(?:19|20)\d{2}/) ||
+    String(r.timestamp || "").match(/(?:19|20)\d{2}/) || [""])[0];
+// Matches LOGIN_MAX_FAILURES / OTP_GLOBAL_CAP in Code.gs. The mock has no
+// clock-based window: the counters reset when the dev server restarts.
+const LOGIN_MAX_FAILURES = 8;
+const OTP_GLOBAL_CAP = 60;
 const PORTAL_NAME = "CHED-OSDS Consultation & Dialogue Reporting Portal";
 const ADMIN = { email: "admin@ched.gov.ph", password: "portal-admin-2026" };
 const OFFICER = {
@@ -46,23 +55,46 @@ const PENDING = {
   password: "pending-user-2026",
 };
 
-/** Mirrors text_() in Code.gs: strips angle brackets, trims, caps length. */
-const text = (v, n) =>
-  String(v == null ? "" : v)
-    .replace(/[<>]/g, "")
-    .trim()
-    .slice(0, n || 500);
-
-const asEmail = (v) => {
-  const e = text(v, 254).toLowerCase();
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : "";
-};
-
 /** Errors flagged `expected` are portal validation messages, not stub bugs. */
 const fail = (message) => {
   const e = new Error(message);
   e.expected = true;
   return e;
+};
+/** Mirrors authError_() in Code.gs: tells the portal the session is finished
+ * so it returns the user to sign-in instead of failing every later request. */
+const failSession = (message) => {
+  const e = fail(message);
+  e.code = "SESSION";
+  return e;
+};
+
+/** Mirrors clean_() in Code.gs: drops control characters, trims, and leaves
+ * angle brackets alone so submitted text is stored as it was written. */
+const clean = (v) =>
+  String(v == null ? "" : v)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
+/** Mirrors text_(): normalised and truncated, for incidental lengths. */
+const text = (v, n) => clean(v).slice(0, n || 500);
+/** Mirrors field_(): over-long values are refused, not quietly shortened. */
+const field = (v, n, label) => {
+  const s = clean(v);
+  if (s.length > n)
+    throw fail(
+      label +
+        " is " +
+        s.length +
+        " characters long. Please shorten it to " +
+        n +
+        " or fewer.",
+    );
+  return s;
+};
+
+const asEmail = (v) => {
+  const e = text(v, 254).toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : "";
 };
 
 const requireDomain = (e) => {
@@ -92,7 +124,14 @@ function seed() {
     otherMatters: "None",
     attendanceFile: MOCK_PATH + "/file/attendance-" + n,
     photoFiles:
-      MOCK_PATH + "/file/photo-" + n + "a\n" + MOCK_PATH + "/file/photo-" + n + "b",
+      MOCK_PATH +
+      "/file/photo-" +
+      n +
+      "a\n" +
+      MOCK_PATH +
+      "/file/photo-" +
+      n +
+      "b",
     presidedBy: "Dir. J. Reyes, Regional Director",
     rapporteur: "A. Cruz, Education Supervisor II",
     certifiedBy: "L. Mendoza, Chief Administrative Officer",
@@ -144,6 +183,12 @@ function seed() {
     ],
     sessions: new Map(),
     otps: new Map(),
+    // email -> failed sign-in count, mirroring the fixed-window throttle in
+    // Code.gs so the lockout is reachable in dev too.
+    loginFailures: new Map(),
+    // email -> revocation timestamp, mirroring revoke_() in Code.gs.
+    revoked: new Map(),
+    otpMailCount: 0,
     counter: 5,
   };
 }
@@ -157,7 +202,14 @@ const findUser = (e) => db.users.find((u) => u.email === asEmail(e));
 
 function session(t, roles) {
   const s = db.sessions.get(String(t || ""));
-  if (!s) throw fail("Your session expired. Please sign in again.");
+  if (!s) throw failSession("Your session expired. Please sign in again.");
+  // Same revocation stamp as Code.gs: rejecting an account or resetting its
+  // password ends any session already open on it.
+  const revoked = db.revoked.get(s.email);
+  if (revoked && revoked > (s.issued || 0))
+    throw failSession(
+      "Your access changed and this session has ended. Please sign in again.",
+    );
   if (roles && roles.indexOf(s.role) < 0)
     throw fail("You do not have permission for this action.");
   return s;
@@ -171,7 +223,9 @@ function mail(to, subject, body) {
       "\n    " +
       subject +
       "\n    " +
-      String(body).replace(/<[^>]*>/g, "").trim() +
+      String(body)
+        .replace(/<[^>]*>/g, "")
+        .trim() +
       "\n",
   );
   return { sent: true, warning: "" };
@@ -204,22 +258,32 @@ const publicReport = (r) => ({
 
 const actions = {
   accountLogin(p) {
-    const u = findUser(p.email),
+    const email = asEmail(p.email),
+      u = findUser(p.email),
       password = String(p.password || "");
+    if ((db.loginFailures.get(email) || 0) >= LOGIN_MAX_FAILURES)
+      throw fail(
+        "Too many sign-in attempts for this account. Please wait a few " +
+          "minutes and try again, or reset your password.",
+      );
     if (u && u.status === "Pending")
       throw fail("Your account is awaiting Central Office approval.");
     if (u && u.status === "Rejected")
       throw fail(
         "Your account request was not approved. Contact Central Office for assistance.",
       );
-    if (!u || u.password !== password)
+    if (!u || u.password !== password) {
+      db.loginFailures.set(email, (db.loginFailures.get(email) || 0) + 1);
       throw fail("Invalid credentials or inactive account.");
+    }
+    db.loginFailures.delete(email);
     const t = newToken();
     db.sessions.set(t, {
       email: u.email,
       name: u.name,
       role: u.role,
       region: u.region,
+      issued: Date.now(),
     });
     return {
       accountToken: t,
@@ -232,7 +296,7 @@ const actions = {
 
   registerAccount(p) {
     const email = asEmail(p.email),
-      name = text(p.name, 200),
+      name = field(p.name, 200, "Full name"),
       region = text(p.region, 80);
     if (!email || !name || REGIONS.indexOf(region) < 0)
       throw fail("Enter your name, official email and CHED Regional Office.");
@@ -275,6 +339,7 @@ const actions = {
     if (!u || u.role !== "chedro_user")
       throw fail("Account request not found.");
     u.status = approve ? "Approved" : "Rejected";
+    db.revoked.set(u.email, Date.now());
     const decision = approve ? "Account approved." : "Account rejected.";
     const notice = mail(
       u.email,
@@ -329,6 +394,37 @@ const actions = {
     });
     if (p.region !== u.region)
       throw fail("You can only submit reports for " + u.region + ".");
+    const date = text(p.date, 30),
+      quarter = text(p.quarter, 30);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+      throw fail("Enter the consultation date as YYYY-MM-DD.");
+    if (date > new Date().toISOString().slice(0, 10))
+      throw fail("The consultation date cannot be in the future.");
+    const year = date.slice(0, 4);
+    // One live report per office per quarter, as in Code.gs: a returned report
+    // is superseded by its replacement, anything else has to be returned first.
+    const clash = db.reports.find(
+      (r) =>
+        r.region === u.region &&
+        r.quarter === quarter &&
+        yearOfRow(r) === year &&
+        r.status !== SUPERSEDED,
+    );
+    if (clash && clash.status !== "Needs revision")
+      throw fail(
+        "A " +
+          quarter +
+          " " +
+          year +
+          " report (" +
+          clash.id +
+          ") is already on file for " +
+          u.region +
+          " and is marked “" +
+          clash.status +
+          "”. Ask Central Office to return it for revision before " +
+          "filing a replacement.",
+      );
     if (!p.attendanceFile) throw fail("Attendance sheet is required.");
     const photos = Array.isArray(p.photoFiles) ? p.photoFiles : [];
     if (!photos.length) throw fail("Photo documentation is required.");
@@ -349,12 +445,16 @@ const actions = {
       quarter: text(p.quarter, 30),
       date: text(p.date, 30),
       participants: Number(p.participants) || 0,
-      initiatives: text(notes.initiatives, 5000),
-      student: text(notes.student, 5000),
-      academic: text(notes.academic, 5000),
-      governance: text(notes.governance, 5000),
-      regionConcerns: text(p.regionConcerns, 5000),
-      otherMatters: text(p.otherMatters, 5000),
+      initiatives: field(
+        notes.initiatives,
+        5000,
+        "CHED initiatives, programs and policies",
+      ),
+      student: field(notes.student, 5000, "Student welfare concerns"),
+      academic: field(notes.academic, 5000, "Curriculum and academic programs"),
+      governance: field(notes.governance, 5000, "HEI governance concerns"),
+      regionConcerns: field(p.regionConcerns, 5000, "Region-specific concerns"),
+      otherMatters: field(p.otherMatters, 5000, "Other matters"),
       attendanceFile:
         MOCK_PATH +
         "/file/" +
@@ -365,30 +465,55 @@ const actions = {
             MOCK_PATH + "/file/" + encodeURIComponent(f.name || "photo-" + i),
         )
         .join("\n"),
-      presidedBy: text(p.presidedBy, 300),
-      rapporteur: text(p.rapporteur, 300),
-      certifiedBy: text(p.certifiedBy, 300),
-      notedBy: text(p.notedBy, 300),
+      presidedBy: field(p.presidedBy, 300, "Presided by"),
+      rapporteur: field(p.rapporteur, 300, "Rapporteur"),
+      certifiedBy: field(p.certifiedBy, 300, "Certified correct by"),
+      notedBy: field(p.notedBy, 300, "Noted by"),
       submittedByEmail: u.email,
       submittedBy: u.name,
       submittedByRole: u.role,
       status: "For review",
       remarks: "",
     });
-    return { submissionId: id, message: "Consultation report submitted." };
+    let replaced = "";
+    if (clash) {
+      replaced = clash.id;
+      clash.status = SUPERSEDED;
+      clash.remarks = (
+        (clash.remarks ? clash.remarks + " " : "") +
+        "[Replaced by " +
+        id +
+        " on " +
+        new Date().toISOString().slice(0, 10) +
+        "]"
+      ).slice(0, 2000);
+    }
+    return {
+      submissionId: id,
+      replaced,
+      message:
+        "Consultation report submitted." +
+        (replaced ? " It replaces " + replaced + "." : ""),
+    };
   },
 
   reviewSubmission(p) {
     session(p.accountToken, ["central_admin", "central_reviewer"]);
     const reference = text(p.reference, 60),
       status = text(p.status, 40),
-      remarks = text(p.remarks, 2000);
+      remarks = field(p.remarks, 2000, "Remarks");
     if (!reference) throw fail("Missing report reference.");
     if (STATUSES.indexOf(status) < 0) throw fail("Unsupported status.");
     if (status === "Needs revision" && !remarks)
       throw fail("Enter remarks explaining what the CHEDRO must revise.");
     const r = db.reports.find((x) => x.id === reference);
     if (!r) throw fail("Report " + reference + " was not found.");
+    if (r.status === SUPERSEDED)
+      throw fail(
+        "Report " +
+          reference +
+          " was replaced by a later submission and can no longer be reviewed.",
+      );
     r.status = status;
     r.remarks = remarks;
     let notice = { sent: true, warning: "" };
@@ -422,10 +547,16 @@ const actions = {
       remarks,
       notified: notice.sent,
       message:
-        "Report marked " + status + "." + (notice.sent ? "" : " " + notice.warning),
+        "Report marked " +
+        status +
+        "." +
+        (notice.sent ? "" : " " + notice.warning),
     };
   },
 
+  // Deliberately uninformative, like Code.gs: an address with no approved
+  // account gets an identical response and an OTP that simply never arrives,
+  // so the endpoint cannot be used to enumerate staff or to mail them.
   requestEmailOtp(p) {
     const email = asEmail(p.email);
     if (!email) throw fail("Enter a valid official email address.");
@@ -433,6 +564,24 @@ const actions = {
     const id = newToken(),
       code = String(Math.floor(100000 + Math.random() * 900000));
     db.otps.set(id, { email, code });
+    const reply = {
+      otpRequestId: id,
+      message:
+        "If " +
+        email +
+        " has an approved portal account, a six-digit code is on its way.",
+    };
+    const u = findUser(email);
+    if (!u || u.status !== "Approved") {
+      console.log(
+        "\n  [mock email] suppressed: no approved account for " + email + "\n",
+      );
+      return reply;
+    }
+    if (++db.otpMailCount > OTP_GLOBAL_CAP) {
+      console.log("\n  [mock email] suppressed: hourly reset-email cap\n");
+      return reply;
+    }
     mail(
       email,
       PORTAL_NAME + ": Password reset code",
@@ -440,10 +589,7 @@ const actions = {
         code +
         ", valid for 10 minutes.\n    Do not share it. Ignore this email if you did not request a reset.",
     );
-    return {
-      otpRequestId: id,
-      message: "Verification code sent to " + email + ".",
-    };
+    return reply;
   },
 
   verifyEmailOtp(p) {
@@ -464,8 +610,13 @@ const actions = {
     if (String(p.password || "").length < 12)
       throw fail("Use a password of at least 12 characters.");
     const u = findUser(s.email);
-    if (!u || u.status !== "Approved") throw fail("Approved account not found.");
+    if (!u || u.status !== "Approved")
+      throw fail("Approved account not found.");
     u.password = String(p.password);
+    // A reset ends any session open on the account, and spends the token that
+    // authorised it -- both as in Code.gs.
+    db.revoked.set(u.email, Date.now());
+    db.sessions.delete("otp:" + String(p.otpSessionToken || ""));
     return { message: "Password updated. You may now sign in." };
   },
 };
@@ -531,7 +682,11 @@ export function mockBackend() {
             out = { ok: true, ...handler(payload) };
           } catch (err) {
             if (!err.expected) console.error("  mock backend error:", err);
-            out = { ok: false, message: err.message || String(err) };
+            out = {
+              ok: false,
+              code: err.code || "",
+              message: err.message || String(err),
+            };
           }
           res.setHeader("Content-Type", "application/json");
           res.end(JSON.stringify(out));

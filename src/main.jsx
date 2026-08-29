@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   LayoutDashboard,
@@ -25,11 +25,17 @@ import {
   Users,
   CalendarDays,
   TrendingUp,
+  Info,
+  Layers,
+  MessageSquareQuote,
 } from "lucide-react";
 import "./styles.css";
 
 const API_URL = import.meta.env.VITE_GAS_WEB_APP_URL || "";
 const DOMAIN = import.meta.env.VITE_ALLOWED_EMAIL_DOMAIN || "ched.gov.ph";
+/** Raised when the backend says the session is finished, so callers can tell
+ * "this request failed" apart from "you are no longer signed in". */
+const SESSION_LOST = "chedro:session-lost";
 async function api(payload) {
   if (!API_URL) throw new Error("Portal backend is not configured yet.");
   const r = await fetch(API_URL, {
@@ -37,9 +43,54 @@ async function api(payload) {
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(payload),
   });
-  const d = await r.json();
-  if (!d.ok) throw new Error(d.message || "Request failed");
+  let d;
+  try {
+    d = await r.json();
+  } catch {
+    // Apps Script answers an outage or a quota block with an HTML page, which
+    // would otherwise surface to the user as a JSON parse error.
+    throw new Error(
+      r.ok
+        ? "The portal backend returned an unreadable response. Please try again."
+        : `The portal backend is unavailable (HTTP ${r.status}). Please try again shortly.`,
+    );
+  }
+  if (!d.ok) {
+    // Every screen catches its own errors, so without this a lapsed session
+    // leaves the user parked on a page where nothing will ever load again.
+    if (d.code === "SESSION")
+      window.dispatchEvent(
+        new CustomEvent(SESSION_LOST, { detail: d.message }),
+      );
+    throw new Error(d.message || "Request failed");
+  }
   return d;
+}
+
+/**
+ * In-memory response cache. Report data is personal, so it deliberately never
+ * reaches sessionStorage: it lives as long as the tab and no longer. Storing
+ * the promise rather than the result also collapses the duplicate fetches two
+ * screens would otherwise fire when both mount at once.
+ */
+const cache = new Map();
+const CACHE_TTL = 60000;
+function cachedApi(payload, force) {
+  const key = payload.action + "|" + (payload.accountToken || "");
+  const hit = cache.get(key);
+  if (!force && hit && Date.now() - hit.at < CACHE_TTL) return hit.promise;
+  const promise = api(payload).catch((e) => {
+    // A failure must never be served to the next caller as if it were data.
+    cache.delete(key);
+    throw e;
+  });
+  cache.set(key, { at: Date.now(), promise });
+  return promise;
+}
+/** Drop the cached reads a write has just made stale. */
+function invalidate(...actions) {
+  for (const key of [...cache.keys()])
+    if (actions.some((a) => key.startsWith(a + "|"))) cache.delete(key);
 }
 
 const regions = [
@@ -83,13 +134,18 @@ const agenda = [
     "Collective higher education institutional governance concerns affecting students",
   ],
 ];
-const QUARTERS = [
-  "1st Quarter",
-  "2nd Quarter",
-  "3rd Quarter",
-  "4th Quarter",
-];
+const QUARTERS = ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"];
 const STATUSES = ["For review", "Validated", "Needs revision"];
+// Set by the backend when a returned report is replaced by a corrected one.
+// Superseded reports stay reachable behind an explicit filter for the record,
+// but never count toward coverage, compliance or the quarterly timeline.
+// Mirrors the caps field_() enforces in Code.gs.
+const NOTE_LIMIT = 5000;
+const SIGNATORY_LIMIT = 300;
+const REMARKS_LIMIT = 2000;
+const SUPERSEDED = "Superseded";
+const FILTER_STATUSES = STATUSES.concat(SUPERSEDED);
+const isLive = (r) => r.status !== SUPERSEDED;
 const quarterNow = () => QUARTERS[Math.floor(new Date().getMonth() / 3)];
 const yearNow = () => String(new Date().getFullYear());
 /** Reporting year of a submission, read from the consultation date and
@@ -109,6 +165,166 @@ const ANNEX_SECTIONS = [
   ["regionConcerns", "Region-specific concerns"],
   ["otherMatters", "Other matters"],
 ];
+// ---- Concern analysis -------------------------------------------------------
+/** The agenda sections that carry concerns, in reporting order. */
+const CONCERN_FIELDS = [
+  ["initiatives", "CHED initiatives, programs and policies"],
+  ["student", "Student welfare and services"],
+  ["academic", "Curriculum and academic programs"],
+  ["governance", "HEI governance concerns"],
+  ["regionConcerns", "Region-specific concerns"],
+  ["otherMatters", "Other matters"],
+];
+/** Offices file each agenda section as a semicolon-separated list, so the
+ * section is not the unit of analysis - the individual concerns inside it are.
+ * Counting how many reports filled a box in said nothing about what was said. */
+const NOTHING =
+  /^(none|none raised|no concerns?( raised)?|nothing( raised)?|n\.?\/?a\.?|wala)[.\s]*$/i;
+function splitConcerns(text) {
+  return String(text || "")
+    .split(/[;\n•]+/)
+    .map((s) =>
+      s
+        .trim()
+        .replace(/^[-–—*·]\s*/, "")
+        .trim(),
+    )
+    .filter((s) => s.length > 2 && !NOTHING.test(s));
+}
+/** Every concern in the given reports, flattened and attributed. */
+function concernIndex(rows) {
+  const items = [];
+  rows.forEach((r) =>
+    CONCERN_FIELDS.forEach(([key, label]) =>
+      splitConcerns(r[key]).forEach((text) =>
+        items.push({ text, region: r.region, category: label, key, id: r.id }),
+      ),
+    ),
+  );
+  return items;
+}
+const STOPWORDS = new Set(
+  `about above across after against along among around because been before being
+   below between both cannot could does doing done during each either else even
+   ever every from further have having here hence however into itself just less
+   like made make many more most much must need needs only other others over own
+   same should since some such than that their them then there these they thing
+   things this those through under until upon very were what when where which
+   while will with within without would your yours also amid another any been
+   both come coming due each especially given include included including its
+   like may might per rather regarding related result results said say says
+   see seen shall still take taken taking thus toward towards use used uses
+   using via well were whether who whom whose why year years new non not now
+   one two three four five six seven eight nine ten all and are but for the
+   was has had who its our out its it's raised concern concerns request
+   requests requested issue issues matter matters student students`
+    .split(/\s+/)
+    .filter(Boolean),
+);
+/** Short domain terms worth keeping despite the length floor. */
+const KEEP_SHORT = new Set([
+  "ched",
+  "tes",
+  "suc",
+  "sucs",
+  "hei",
+  "heis",
+  "ojt",
+  "cmo",
+  "tdp",
+  "gad",
+  "ict",
+  "led",
+  "lgu",
+  "cav",
+  "tor",
+  "4ps",
+  "id",
+  "ids",
+  "fee",
+  "fees",
+]);
+/** Crude singularisation - enough to merge "scholarship" with "scholarships"
+ * without pretending to be a stemmer. */
+function stem(w) {
+  if (w.length > 4 && w.endsWith("ies")) return w.slice(0, -3) + "y";
+  if (w.length > 5 && w.endsWith("sses")) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith("s") && !/(ss|us|is)$/.test(w))
+    return w.slice(0, -1);
+  return w;
+}
+/** stem -> the surface form to display for it. */
+function keywords(text) {
+  const out = new Map();
+  String(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9’'\-/ ]+/g, " ")
+    .split(/[\s/]+/)
+    .forEach((raw) => {
+      const w = raw.replace(/^[-'’]+|[-'’]+$/g, "");
+      if (!w) return;
+      if (!(KEEP_SHORT.has(w) || (w.length >= 5 && !STOPWORDS.has(w)))) return;
+      const s = stem(w);
+      if (NOT_A_THEME.has(s)) return;
+      if (!out.has(s)) out.set(s, w);
+    });
+  return out;
+}
+/**
+ * Terms recurring across the concerns raised. This is keyword matching, not
+ * language understanding, so every theme carries the concerns behind it: the
+ * count points a reviewer at what to read, it does not stand in for reading it.
+ */
+function recurringThemes(items) {
+  const map = new Map();
+  items.forEach((item) =>
+    keywords(item.text).forEach((surface, s) => {
+      let e = map.get(s);
+      if (!e)
+        map.set(s, (e = { label: surface, regions: new Set(), items: [] }));
+      e.regions.add(item.region);
+      e.items.push(item);
+    }),
+  );
+  return [...map.values()]
+    .filter((e) => e.items.length > 1)
+    .sort(
+      (a, b) =>
+        b.regions.size - a.regions.size ||
+        b.items.length - a.items.length ||
+        a.label.localeCompare(b.label),
+    );
+}
+/** Terms that are names, not themes: they appear in nearly every concern by
+ * definition, so ranking them tells a reviewer nothing. */
+const NOT_A_THEME = new Set([
+  "ched",
+  "chedro",
+  "chedros",
+  "region",
+  "regional",
+]);
+/** Display forms for terms the title-caser would otherwise mangle. */
+const ACRONYMS = {
+  tes: "TES",
+  suc: "SUC",
+  hei: "HEI",
+  ojt: "OJT",
+  cmo: "CMO",
+  tdp: "TDP",
+  gad: "GAD",
+  ict: "ICT",
+  lgu: "LGU",
+  cav: "CAV",
+  tor: "TOR",
+  id: "ID",
+  unifast: "UniFAST",
+  "4ps": "4Ps",
+  uep: "UEP",
+};
+const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const themeLabel = (w) => ACRONYMS[w] || titleCase(w);
+
 const SIGNATORIES = [
   ["presidedBy", "Presided by"],
   ["rapporteur", "Rapporteur"],
@@ -126,11 +342,27 @@ function App() {
     [page, setPage] = useState("dashboard"),
     [adminTab, setAdminTab] = useState("summary"),
     [mobile, setMobile] = useState(false),
+    [signedOut, setSignedOut] = useState(""),
     [notifications, setNotifications] = useState(false);
+  // A session can end while the tab is open: it lapses after two hours, or the
+  // Central Office rejects the account, or the password is reset elsewhere.
+  useEffect(() => {
+    const lost = (e) => {
+      sessionStorage.removeItem("chedro_account");
+      // Never leave one account's reports cached for whoever signs in next.
+      cache.clear();
+      setSignedOut(e.detail || "Your session has ended. Please sign in again.");
+      setAccount(null);
+    };
+    window.addEventListener(SESSION_LOST, lost);
+    return () => window.removeEventListener(SESSION_LOST, lost);
+  }, []);
   if (!account)
     return (
       <Login
+        notice={signedOut}
         onLogin={(u) => {
+          setSignedOut("");
           setAccount(u);
           sessionStorage.setItem("chedro_account", JSON.stringify(u));
           setPage(u.role.startsWith("central") ? "admin" : "dashboard");
@@ -259,6 +491,7 @@ function App() {
             title="Sign out"
             onClick={() => {
               sessionStorage.removeItem("chedro_account");
+              cache.clear();
               setAccount(null);
             }}
           >
@@ -342,7 +575,7 @@ function App() {
     </div>
   );
 }
-function Login({ onLogin }) {
+function Login({ onLogin, notice }) {
   const [mode, setMode] = useState("login"),
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
@@ -390,7 +623,12 @@ function Login({ onLogin }) {
     try {
       const d = await api({ action: "requestEmailOtp", email });
       setRequestId(d.otpRequestId);
-      setSuccess("A six-digit recovery code was sent to your official email.");
+      // The backend answers the same way whether or not the address has an
+      // account, so relay its wording rather than asserting a code was sent.
+      setSuccess(
+        d.message ||
+          "If that address has an approved portal account, a six-digit code is on its way.",
+      );
     } catch (e) {
       setError(e.message);
     } finally {
@@ -515,6 +753,12 @@ function Login({ onLogin }) {
                 ? "Choose your CHED Regional Office. Central Office will verify and approve your request."
                 : "Verify your official email before choosing a new password."}
           </p>
+          {notice && (
+            <p className="login-notice">
+              <Clock3 />
+              {notice}
+            </p>
+          )}
           {mode === "recover" ? (
             <form onSubmit={finishRecovery}>
               <Field label="Official email" required>
@@ -675,11 +919,23 @@ function Nav({ active, icon, children, onClick }) {
 }
 function Dashboard({ go, account, viewReports }) {
   const [rows, setRows] = useState([]),
+    [loading, setLoading] = useState(true),
     [error, setError] = useState("");
   useEffect(() => {
-    api({ action: "listRegionalSubmissions", accountToken: account.token })
-      .then((d) => setRows(d.rows || []))
-      .catch((e) => setError(e.message));
+    let alive = true;
+    cachedApi({
+      action: "listRegionalSubmissions",
+      accountToken: account.token,
+    })
+      // The overview has no status filter, so replaced reports are dropped on
+      // arrival: they would otherwise double every stat and leave the timeline
+      // showing a quarter as both submitted and awaiting revision.
+      .then((d) => alive && setRows((d.rows || []).filter(isLive)))
+      .catch((e) => alive && setError(e.message))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
   }, [account.token]);
   const currentQuarter = quarterNow(),
     currentYear = yearNow(),
@@ -730,7 +986,8 @@ function Dashboard({ go, account, viewReports }) {
         </div>
       </div>
       {error && <p className="notice error-notice">{error}</p>}
-      <div className="stats">
+      {loading && <SkStats />}
+      <div className="stats" hidden={loading}>
         <Stat
           icon={<FileText />}
           n={String(rows.length)}
@@ -765,7 +1022,11 @@ function Dashboard({ go, account, viewReports }) {
             </div>
             <button onClick={viewReports}>View all</button>
           </div>
-          <ReportTable rows={rows.slice(0, 3)} />
+          {loading ? (
+            <SkPanel rows={3} head={false} />
+          ) : (
+            <ReportTable rows={rows.slice(0, 3)} />
+          )}
         </div>
         <div className="panel timeline">
           <div className="panel-head">
@@ -793,13 +1054,74 @@ function Dashboard({ go, account, viewReports }) {
     </>
   );
 }
-function Stat({ icon, n, label, tone }) {
+/** Explains a figure without making the reader guess how it was derived.
+ * Focusable so it is reachable by keyboard, and labelled so a screen reader
+ * announces the explanation rather than a bare icon. */
+function Tip({ text }) {
+  return (
+    <span className="tip" tabIndex={0} role="note" aria-label={text}>
+      <Info />
+      <span className="tip-bubble">{text}</span>
+    </span>
+  );
+}
+function Stat({ icon, n, label, tone, tip }) {
   return (
     <div className="stat">
       <span className={tone}>{icon}</span>
       <div>
         <b>{n}</b>
-        <small>{label}</small>
+        <small>
+          {label}
+          {tip && <Tip text={tip} />}
+        </small>
+      </div>
+    </div>
+  );
+}
+/** Placeholders shown while a screen's first read is in flight, sized like the
+ * content they stand in for so nothing jumps when the data lands. */
+function Sk({ w, h = 13, r = 6 }) {
+  return (
+    <span className="sk" style={{ width: w, height: h, borderRadius: r }} />
+  );
+}
+function SkStats({ n = 4 }) {
+  return (
+    <div className="stats admin-stats">
+      {Array.from({ length: n }, (_, i) => (
+        <div className="stat" key={i}>
+          <Sk w={38} h={38} r={11} />
+          <div className="sk-lines">
+            <Sk w="45%" h={18} />
+            <Sk w="80%" h={10} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+function SkPanel({ rows = 4, head = true }) {
+  return (
+    <div className="panel">
+      {head && (
+        <div className="panel-head">
+          <div className="sk-lines">
+            <Sk w={190} h={15} />
+            <Sk w={260} h={10} />
+          </div>
+        </div>
+      )}
+      <div className="sk-rows">
+        {Array.from({ length: rows }, (_, i) => (
+          <div className="sk-row" key={i}>
+            <Sk w={30} h={30} r={9} />
+            <div className="sk-lines">
+              <Sk w={`${55 + ((i * 13) % 30)}%`} h={12} />
+              <Sk w={`${30 + ((i * 17) % 25)}%`} h={9} />
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -827,6 +1149,11 @@ function ReportForm({ done, account }) {
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v })),
     note = (k, v) => setForm((f) => ({ ...f, notes: { ...f.notes, [k]: v } }));
   function validate(target) {
+    // Length first: it is about text already on screen, so hearing "attach the
+    // attendance sheet" before "this section is 200 characters too long" would
+    // send the user off to fix the wrong thing.
+    const long = tooLong();
+    if (long) return long;
     if (target >= 2 && !form.date)
       return "Enter the consultation or dialogue date.";
     if (target >= 3) {
@@ -844,6 +1171,21 @@ function ReportForm({ done, account }) {
         return "Attach at least one consultation photo.";
     }
     return "";
+  }
+  /** The backend refuses an over-long value rather than storing a truncated
+   * one, so catch it here with the field named. The inputs carry no maxLength
+   * on purpose: silently swallowing the tail of a paste is the same data loss
+   * moved to the browser. */
+  function tooLong() {
+    const over = [
+      ...agenda.map(([k, t]) => [form.notes[k], NOTE_LIMIT, t]),
+      [form.regionConcerns, NOTE_LIMIT, "Region-specific concerns"],
+      [form.otherMatters, NOTE_LIMIT, "Other matters"],
+      ...SIGNATORIES.map(([k, t]) => [form[k], SIGNATORY_LIMIT, t]),
+    ].find(([value, max]) => (value || "").length > max);
+    return over
+      ? `${over[2]} is ${over[0].length.toLocaleString()} characters. Shorten it to ${over[1].toLocaleString()} or fewer.`
+      : "";
   }
   async function encodeFile(file) {
     if (!file) return null;
@@ -909,6 +1251,8 @@ function ReportForm({ done, account }) {
         accountToken: account.token,
         ...form,
       });
+      // The history the user lands on next must show the report they just filed.
+      invalidate("listRegionalSubmissions", "adminDashboard");
       done();
     } catch (e) {
       setMsg(e.message);
@@ -965,6 +1309,7 @@ function ReportForm({ done, account }) {
             <Field label="Date of consultation/dialogue" required>
               <input
                 type="date"
+                max={new Date().toISOString().slice(0, 10)}
                 value={form.date}
                 onChange={(e) => update("date", e.target.value)}
               />
@@ -1011,10 +1356,15 @@ function ReportForm({ done, account }) {
                 onChange={(e) => note(k, e.target.value)}
                 placeholder="Cite key points, decisions or agreements made…"
               />
+              <Limit value={form.notes[k]} max={NOTE_LIMIT} />
             </div>
           ))}
           <div className="fields two">
-            <Field label="Region-specific concerns" required>
+            <Field
+              label="Region-specific concerns"
+              required
+              hint={<Limit value={form.regionConcerns} max={NOTE_LIMIT} />}
+            >
               <textarea
                 rows="4"
                 value={form.regionConcerns}
@@ -1022,7 +1372,11 @@ function ReportForm({ done, account }) {
                 placeholder="Describe concerns unique to your region…"
               />
             </Field>
-            <Field label="Other matters" required>
+            <Field
+              label="Other matters"
+              required
+              hint={<Limit value={form.otherMatters} max={NOTE_LIMIT} />}
+            >
               <textarea
                 rows="4"
                 value={form.otherMatters}
@@ -1090,28 +1444,44 @@ function ReportForm({ done, account }) {
           </div>
           {msg && <p className="notice">{msg}</p>}
           <div className="fields two">
-            <Field label="Presided by" required>
+            <Field
+              label="Presided by"
+              required
+              hint={<Limit value={form.presidedBy} max={SIGNATORY_LIMIT} />}
+            >
               <input
                 value={form.presidedBy}
                 onChange={(e) => update("presidedBy", e.target.value)}
                 placeholder="Full name and designation"
               />
             </Field>
-            <Field label="Rapporteur" required>
+            <Field
+              label="Rapporteur"
+              required
+              hint={<Limit value={form.rapporteur} max={SIGNATORY_LIMIT} />}
+            >
               <input
                 value={form.rapporteur}
                 onChange={(e) => update("rapporteur", e.target.value)}
                 placeholder="Full name and designation"
               />
             </Field>
-            <Field label="Certified correct by" required>
+            <Field
+              label="Certified correct by"
+              required
+              hint={<Limit value={form.certifiedBy} max={SIGNATORY_LIMIT} />}
+            >
               <input
                 value={form.certifiedBy}
                 onChange={(e) => update("certifiedBy", e.target.value)}
                 placeholder="Full name and designation"
               />
             </Field>
-            <Field label="Noted by: CHED Regional Director" required>
+            <Field
+              label="Noted by: CHED Regional Director"
+              required
+              hint={<Limit value={form.notedBy} max={SIGNATORY_LIMIT} />}
+            >
               <input
                 value={form.notedBy}
                 onChange={(e) => update("notedBy", e.target.value)}
@@ -1145,6 +1515,17 @@ function ReportForm({ done, account }) {
     </form>
   );
 }
+/** Length counter for a field the backend refuses rather than truncates. Stays
+ * out of the way until the value is near the cap, then turns red past it. */
+function Limit({ value, max }) {
+  const n = (value || "").length;
+  if (n < max * 0.9) return null;
+  return (
+    <small className={n > max ? "limit over" : "limit"}>
+      {n.toLocaleString()} / {max.toLocaleString()} characters
+    </small>
+  );
+}
 function FormTitle({ n, title, text }) {
   return (
     <div className="form-title">
@@ -1156,7 +1537,7 @@ function FormTitle({ n, title, text }) {
     </div>
   );
 }
-function Field({ label, required, children }) {
+function Field({ label, required, children, hint }) {
   return (
     <label className="field">
       <span>
@@ -1166,6 +1547,7 @@ function Field({ label, required, children }) {
       {React.cloneElement(children, {
         required: required || children.props.required,
       })}
+      {hint}
     </label>
   );
 }
@@ -1241,24 +1623,40 @@ function downloadCsv(rows, name = "chedro-dialogue-reports.csv") {
 }
 function Reports({ account }) {
   const [rows, setRows] = useState([]),
+    [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [query, setQuery] = useState(""),
     [quarter, setQuarter] = useState("All quarters"),
     [year, setYear] = useState("All years"),
     [status, setStatus] = useState("All statuses");
   useEffect(() => {
-    api({ action: "listRegionalSubmissions", accountToken: account.token })
-      .then((d) => setRows(d.rows || []))
-      .catch((e) => setError(e.message));
+    let alive = true;
+    cachedApi({
+      action: "listRegionalSubmissions",
+      accountToken: account.token,
+    })
+      .then((d) => alive && setRows(d.rows || []))
+      .catch((e) => alive && setError(e.message))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
   }, [account.token]);
-  const years = Array.from(
+  const liveRows = rows.filter(isLive),
+    showSuperseded = status === SUPERSEDED,
+    // The replaced history is reachable only by asking for it by name, so a
+    // corrected report never re-raises the revision banner it resolved.
+    scoped = showSuperseded ? rows.filter((r) => !isLive(r)) : liveRows,
+    years = Array.from(
       new Set(rows.map(yearOf).filter(Boolean).concat(yearNow())),
     ).sort((a, b) => b.localeCompare(a)),
-    needsRevision = rows.filter((r) => r.status === "Needs revision").length,
+    needsRevision = liveRows.filter(
+      (r) => r.status === "Needs revision",
+    ).length,
     queryText = query.trim().toLowerCase(),
-    filtered = rows.filter(
+    filtered = scoped.filter(
       (r) =>
-        (status === "All statuses" || r.status === status) &&
+        (status === "All statuses" || showSuperseded || r.status === status) &&
         (quarter === "All quarters" || r.quarter === quarter) &&
         (year === "All years" || yearOf(r) === year) &&
         (!queryText ||
@@ -1278,7 +1676,7 @@ function Reports({ account }) {
             appear here.
           </p>
         </div>
-        <span>{rows.length} active reports</span>
+        <span>{liveRows.length} active reports</span>
       </div>
       {error && <p className="notice error-notice">{error}</p>}
       {needsRevision > 0 && (
@@ -1327,7 +1725,7 @@ function Reports({ account }) {
             onChange={(e) => setStatus(e.target.value)}
           >
             <option>All statuses</option>
-            {STATUSES.map((s) => (
+            {FILTER_STATUSES.map((s) => (
               <option key={s}>{s}</option>
             ))}
           </select>
@@ -1336,10 +1734,14 @@ function Reports({ account }) {
             Export
           </button>
         </div>
-        <ReportTable
-          rows={filtered}
-          emptyText="No reports match these filters."
-        />
+        {loading ? (
+          <SkPanel rows={4} head={false} />
+        ) : (
+          <ReportTable
+            rows={filtered}
+            emptyText="No reports match these filters."
+          />
+        )}
       </div>
     </>
   );
@@ -1480,7 +1882,18 @@ function ReportDetail({ report, onReview }) {
           ))}
         </div>
       )}
-      {onReview && <ReviewActions report={report} onReview={onReview} />}
+      {onReview &&
+        (report.status === SUPERSEDED ? (
+          <p className="annex-remarks">
+            <CircleAlert />
+            <span>
+              Replaced by a later submission from this office and kept for the
+              record. It can no longer be validated or returned.
+            </span>
+          </p>
+        ) : (
+          <ReviewActions report={report} onReview={onReview} />
+        ))}
     </div>
   );
 }
@@ -1501,6 +1914,13 @@ function ReviewActions({ report, onReview }) {
     // revision" note must not follow the report into validation and get
     // emailed back as if the office still had something to fix.
     const outgoing = status === "Validated" && !edited ? "" : remarks;
+    if (outgoing.length > REMARKS_LIMIT) {
+      setMessage(
+        `Remarks are ${outgoing.length.toLocaleString()} characters. Shorten them to ${REMARKS_LIMIT.toLocaleString()} or fewer.`,
+      );
+      setMessageWarn(true);
+      return;
+    }
     setBusy(status);
     setMessage("");
     setMessageWarn(false);
@@ -1530,6 +1950,7 @@ function ReviewActions({ report, onReview }) {
           }}
           placeholder="Required when returning a report for revision…"
         />
+        <Limit value={remarks} max={REMARKS_LIMIT} />
       </label>
       <div className="review-buttons">
         <button
@@ -1578,6 +1999,7 @@ function Status({ s }) {
 }
 function Admin({ tab, setTab, account }) {
   const [live, setLive] = useState(null),
+    [loading, setLoading] = useState(true),
     [loadError, setLoadError] = useState("");
   // Reporting period drives the national panels; the submission filters below
   // narrow the queue down to one CHEDRO, status or search term.
@@ -1591,26 +2013,43 @@ function Admin({ tab, setTab, account }) {
       query: "",
     });
   useEffect(() => {
-    api({ action: "adminDashboard", accountToken: account.token })
-      .then(setLive)
-      .catch((e) => setLoadError(e.message));
+    let alive = true;
+    cachedApi({ action: "adminDashboard", accountToken: account.token })
+      .then((d) => alive && setLive(d))
+      .catch((e) => alive && setLoadError(e.message))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
   }, [account.token]);
-  const adminRows = live?.rows || [];
+  const adminRows = live?.rows || [],
+    // Coverage, themes and compliance always read the live record. A superseded
+    // row is the copy an office has already replaced; counting it would report
+    // every revising office twice and hold its region red after the fix landed.
+    liveRows = adminRows.filter(isLive);
+  /** Applied to the table first and confirmed after: a reviewer working down a
+   * queue should see the decision land immediately. If the write fails the row
+   * is put back exactly as it was, so the screen never keeps a decision the
+   * Sheet did not record. */
   async function review(reference, status, remarks) {
-    const d = await api({
-      action: "reviewSubmission",
-      accountToken: account.token,
-      reference,
-      status,
-      remarks,
-    });
-    setLive((prev) => ({
-      ...prev,
-      rows: (prev?.rows || []).map((r) =>
-        r.id === reference ? { ...r, status, remarks } : r,
-      ),
-    }));
-    return d;
+    const before = live?.rows || [];
+    const patch = (rows) =>
+      rows.map((r) => (r.id === reference ? { ...r, status, remarks } : r));
+    setLive((prev) => ({ ...prev, rows: patch(prev?.rows || []) }));
+    try {
+      const d = await api({
+        action: "reviewSubmission",
+        accountToken: account.token,
+        reference,
+        status,
+        remarks,
+      });
+      invalidate("adminDashboard", "listRegionalSubmissions");
+      return d;
+    } catch (e) {
+      setLive((prev) => ({ ...prev, rows: before }));
+      throw e;
+    }
   }
   const setPeriodField = (k, v) => setPeriod((p) => ({ ...p, [k]: v })),
     setFilter = (k, v) => setFilters((f) => ({ ...f, [k]: v }));
@@ -1618,22 +2057,29 @@ function Admin({ tab, setTab, account }) {
       new Set(adminRows.map(yearOf).filter(Boolean).concat(yearNow())),
     ).sort((a, b) => b.localeCompare(a)),
     total = regions.length,
+    inPeriod = (r) =>
+      (period.quarter === "All quarters" || r.quarter === period.quarter) &&
+      (period.year === "All years" || yearOf(r) === period.year),
     // National panels: scoped to the reporting period only, so coverage and
     // pending-office counts stay meaningful regardless of the region filter.
-    periodRows = adminRows.filter(
-      (r) =>
-        (period.quarter === "All quarters" || r.quarter === period.quarter) &&
-        (period.year === "All years" || yearOf(r) === period.year),
-    ),
+    periodRows = liveRows.filter(inPeriod),
     periodLabel = `${period.quarter === "All quarters" ? "All quarters" : period.quarter}${
       period.year === "All years" ? "" : ` · ${period.year}`
     }`,
     // Submission queue: the period rows narrowed by CHEDRO, status and search.
+    // It is the only panel that can be pointed at the superseded history, and
+    // only by selecting that status explicitly.
+    showSuperseded = filters.status === SUPERSEDED,
+    queueRows = showSuperseded
+      ? adminRows.filter((r) => !isLive(r)).filter(inPeriod)
+      : periodRows,
     queryText = filters.query.trim().toLowerCase(),
-    filteredRows = periodRows.filter(
+    filteredRows = queueRows.filter(
       (r) =>
         (filters.region === "All CHEDROs" || r.region === filters.region) &&
-        (filters.status === "All statuses" || r.status === filters.status) &&
+        (filters.status === "All statuses" ||
+          showSuperseded ||
+          r.status === filters.status) &&
         (!queryText ||
           [
             r.id,
@@ -1714,14 +2160,6 @@ function Admin({ tab, setTab, account }) {
       if (reports.some((r) => r.status === "For review")) return "For review";
       return reports[0].status || "Submitted";
     };
-  const themeRanking = [
-      ["Student welfare concerns", themes.student],
-      ["Curriculum and academic programs", themes.academic],
-      ["CHED initiatives and policies", themes.initiatives],
-      ["Region-specific concerns", themes.regionSpecific],
-      ["HEI governance concerns", themes.governance],
-    ].sort((a, b) => b[1] - a[1]),
-    regionalSignals = periodRows.filter((r) => r.regionConcerns).slice(0, 3);
   return (
     <>
       <div className="admin-top">
@@ -1758,7 +2196,10 @@ function Admin({ tab, setTab, account }) {
           onClick={() =>
             downloadCsv(
               filtersActive ? filteredRows : periodRows,
-              `chedro-consolidated-report-${(filtersActive ? filters.region : "all-chedros")
+              `chedro-consolidated-report-${(filtersActive
+                ? filters.region
+                : "all-chedros"
+              )
                 .toLowerCase()
                 .replace(/[^a-z0-9]+/g, "-")}.csv`,
             )
@@ -1786,7 +2227,13 @@ function Admin({ tab, setTab, account }) {
           </button>
         ))}
       </div>
-      {tab === "summary" && (
+      {loading && tab !== "themes" && tab !== "users" && (
+        <>
+          <SkStats />
+          <SkPanel rows={5} />
+        </>
+      )}
+      {tab === "summary" && !loading && (
         <>
           <div className="stats admin-stats">
             <Stat
@@ -1794,24 +2241,28 @@ function Admin({ tab, setTab, account }) {
               n={`${submitted}/${total}`}
               label="CHEDROs submitted"
               tone="blue"
+              tip="Regional offices with at least one live report in this period. Replaced reports are not counted."
             />
             <Stat
               icon={<Users />}
               n={participants.toLocaleString()}
               label="Participants reached"
               tone="purple"
+              tip="Total attendance recorded across every live report in this period."
             />
             <Stat
               icon={<FileText />}
               n={String(concerns)}
               label="Concern sections completed"
               tone="amber"
+              tip="Agenda sections filled in across all reports. Open Themes & actions to read what was raised."
             />
             <Stat
               icon={<CheckCircle2 />}
               n={String(validated)}
               label="Reports validated"
               tone="green"
+              tip="Reports Central Office has reviewed and accepted. Reports still For review or returned are excluded."
             />
           </div>
           <div className="summary-grid">
@@ -1820,7 +2271,7 @@ function Admin({ tab, setTab, account }) {
                 <div>
                   <h3>National submission coverage</h3>
                   <p>
-                    {submitted} of {total} CHED Regional Offices · NIR included
+                    {submitted} of {total} CHED Regional Offices reporting
                   </p>
                 </div>
                 <b className="coverage">{coverage}%</b>
@@ -1891,8 +2342,8 @@ function Admin({ tab, setTab, account }) {
                 <div>
                   <b>{total - submitted} CHEDROs remain outstanding</b>
                   <p>
-                    NIR is included in the {total}-office national baseline for
-                    submission monitoring.
+                    Measured against the {total}-office national baseline for{" "}
+                    {periodLabel}.
                   </p>
                 </div>
               </div>
@@ -1933,7 +2384,7 @@ function Admin({ tab, setTab, account }) {
           </div>
         </>
       )}
-      {tab === "submissions" && (
+      {tab === "submissions" && !loading && (
         <>
           <div className="stats admin-stats">
             <Stat
@@ -1999,9 +2450,7 @@ function Admin({ tab, setTab, account }) {
               </div>
               <select
                 aria-label="Filter by CHED Regional Office"
-                className={
-                  filters.region === "All CHEDROs" ? "" : "filter-on"
-                }
+                className={filters.region === "All CHEDROs" ? "" : "filter-on"}
                 value={filters.region}
                 onChange={(e) => setFilter("region", e.target.value)}
               >
@@ -2012,14 +2461,12 @@ function Admin({ tab, setTab, account }) {
               </select>
               <select
                 aria-label="Filter by status"
-                className={
-                  filters.status === "All statuses" ? "" : "filter-on"
-                }
+                className={filters.status === "All statuses" ? "" : "filter-on"}
                 value={filters.status}
                 onChange={(e) => setFilter("status", e.target.value)}
               >
                 <option>All statuses</option>
-                {STATUSES.map((s) => (
+                {FILTER_STATUSES.map((s) => (
                   <option key={s}>{s}</option>
                 ))}
               </select>
@@ -2055,102 +2502,13 @@ function Admin({ tab, setTab, account }) {
         </>
       )}
       {tab === "themes" && (
-        <>
-          <div className="theme-layout">
-            <div className="panel">
-              <div className="panel-head">
-                <div>
-                  <h3>Concern themes across CHEDROs</h3>
-                  <p>Completed sections in submitted consultation reports</p>
-                </div>
-              </div>
-              <ThemeBar
-                label="Student welfare concerns"
-                count={themes.student}
-                pct={Math.min(
-                  100,
-                  (themes.student / Math.max(1, periodRows.length)) * 100,
-                )}
-              />
-              <ThemeBar
-                label="Curriculum and academic programs"
-                count={themes.academic}
-                pct={Math.min(
-                  100,
-                  (themes.academic / Math.max(1, periodRows.length)) * 100,
-                )}
-              />
-              <ThemeBar
-                label="CHED initiatives and policies"
-                count={themes.initiatives}
-                pct={Math.min(
-                  100,
-                  (themes.initiatives / Math.max(1, periodRows.length)) * 100,
-                )}
-              />
-              <ThemeBar
-                label="Region-specific concerns"
-                count={themes.regionSpecific}
-                pct={Math.min(
-                  100,
-                  (themes.regionSpecific / Math.max(1, periodRows.length)) *
-                    100,
-                )}
-              />
-              <ThemeBar
-                label="HEI governance concerns"
-                count={themes.governance}
-                pct={Math.min(
-                  100,
-                  (themes.governance / Math.max(1, periodRows.length)) * 100,
-                )}
-              />
-            </div>
-            <div className="panel action-panel">
-              <div className="panel-head">
-                <div>
-                  <h3>Priority review areas</h3>
-                  <p>Ranked by current-quarter reporting frequency</p>
-                </div>
-              </div>
-              {themeRanking.slice(0, 4).map(([label, count], i) => (
-                <div className="action-row" key={label}>
-                  <i>{i + 1}</i>
-                  <div>
-                    <b>{label}</b>
-                    <small>{count} submitted reports</small>
-                  </div>
-                  <span className={i < 2 ? "high" : "medium"}>Review</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="panel quote-panel">
-            <div className="panel-head">
-              <div>
-                <h3>Notable regional signals</h3>
-                <p>Representative concerns for policy review</p>
-              </div>
-            </div>
-            <div className="quotes">
-              {regionalSignals.length ? (
-                regionalSignals.map((report) => (
-                  <blockquote key={report.id}>
-                    “{report.regionConcerns}”
-                    <cite>{report.region} · Region-specific concern</cite>
-                  </blockquote>
-                ))
-              ) : (
-                <p className="empty-state">
-                  No region-specific concerns have been submitted for this
-                  quarter.
-                </p>
-              )}
-            </div>
-          </div>
-        </>
+        <ThemesTab
+          rows={periodRows}
+          periodLabel={periodLabel}
+          loading={loading}
+        />
       )}
-      {tab === "compliance" && (
+      {tab === "compliance" && !loading && (
         <>
           <div className="stats admin-stats">
             <Stat
@@ -2243,17 +2601,242 @@ function MiniMetric({ label, value, detail, trend }) {
     </div>
   );
 }
-function ThemeBar({ label, count, pct }) {
+/** One concern as an office wrote it, attributed back to that office. */
+function ConcernLine({ item, showCategory }) {
   return (
-    <div className="theme-bar">
-      <div>
-        <b>{label}</b>
-        <span>{count} CHEDROs</span>
+    <li className="concern">
+      <span className="concern-region">{item.region}</span>
+      <span className="concern-text">{item.text}</span>
+      {showCategory && <span className="concern-cat">{item.category}</span>}
+    </li>
+  );
+}
+/**
+ * What the CHEDROs actually reported, rather than how many of them filled a
+ * section in. Offices file each agenda section as a semicolon-separated list,
+ * so the concerns are split back out, counted across offices, and shown in
+ * full - the ranking is a way into the text, not a replacement for it.
+ */
+function ThemesTab({ rows, periodLabel, loading }) {
+  const [query, setQuery] = useState(""),
+    [openTheme, setOpenTheme] = useState(""),
+    [openCat, setOpenCat] = useState("");
+  const items = useMemo(() => concernIndex(rows), [rows]),
+    themes = useMemo(() => recurringThemes(items), [items]);
+  const q = query.trim().toLowerCase(),
+    matches = (i) =>
+      !q ||
+      i.text.toLowerCase().includes(q) ||
+      i.region.toLowerCase().includes(q) ||
+      i.category.toLowerCase().includes(q),
+    shown = items.filter(matches),
+    shared = themes.filter((t) => t.regions.size > 1),
+    // With one office reporting, nothing can recur across offices; fall back to
+    // what that office repeated so the panel still says something true.
+    base = shared.length ? shared : themes,
+    // A search runs over every theme, not just the eight normally on show -
+    // otherwise searching a term that ranks ninth reports nothing found while
+    // the concerns for it sit in the panel below.
+    ranked = (q ? base.filter((t) => t.items.some(matches)) : base).slice(0, 8),
+    offices = new Set(items.map((i) => i.region)),
+    byCategory = CONCERN_FIELDS.map(([key, label]) => {
+      const list = items.filter((i) => i.key === key);
+      return {
+        key,
+        label,
+        list,
+        regions: new Set(list.map((i) => i.region)),
+      };
+    }).filter((c) => c.list.length);
+
+  if (loading)
+    return (
+      <>
+        <SkStats />
+        <SkPanel rows={5} />
+        <SkPanel rows={4} />
+      </>
+    );
+  if (!rows.length)
+    return (
+      <div className="panel">
+        <p className="empty-state">
+          No consultation reports were submitted for {periodLabel}, so there is
+          nothing to summarise yet.
+        </p>
       </div>
-      <div className="bar">
-        <i style={{ width: pct + "%" }} />
+    );
+  if (!items.length)
+    return (
+      <div className="panel">
+        <p className="empty-state">
+          {rows.length} report{rows.length > 1 ? "s were" : " was"} submitted
+          for {periodLabel}, but no concerns were recorded in them.
+        </p>
       </div>
-    </div>
+    );
+  return (
+    <>
+      <div className="stats admin-stats">
+        <Stat
+          icon={<MessageSquareQuote />}
+          n={items.length.toLocaleString()}
+          label="Concerns raised"
+          tone="blue"
+          tip="Every item written across all agenda sections. Offices separate concerns with semicolons, so one report usually contributes several."
+        />
+        <Stat
+          icon={<Building2 />}
+          n={String(offices.size)}
+          label="Offices reporting"
+          tone="green"
+          tip="CHED Regional Offices that recorded at least one concern in this period."
+        />
+        <Stat
+          icon={<TrendingUp />}
+          n={String(shared.length)}
+          label="Recurring across offices"
+          tone="amber"
+          tip="Terms appearing in concerns from more than one office. Keyword matching, so read the concerns underneath before acting on a count."
+        />
+        <Stat
+          icon={<Layers />}
+          n={String(byCategory.length)}
+          label="Agenda areas covered"
+          tone="purple"
+          tip="Agenda sections in which at least one office recorded a concern."
+        />
+      </div>
+      <div className="panel">
+        <div className="panel-head">
+          <div>
+            <h3>What is recurring across CHEDROs</h3>
+            <p>
+              {shared.length
+                ? "Terms raised by more than one regional office"
+                : "Terms raised more than once — only one office has reported"}{" "}
+              · {periodLabel}
+            </p>
+          </div>
+          <div className="search">
+            <Search />
+            <input
+              aria-label="Search concerns"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search every concern raised…"
+            />
+          </div>
+        </div>
+        {ranked.length ? (
+          <ol className="theme-list">
+            {ranked.map((t, i) => {
+              const open = openTheme === t.label,
+                hits = t.items.filter(matches),
+                // Both counts describe the same set, so a search narrows the
+                // office tally as well as the concern tally.
+                hitRegions = [...new Set(hits.map((i) => i.region))];
+              return (
+                <li key={t.label} className={open ? "theme open" : "theme"}>
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    onClick={() => setOpenTheme(open ? "" : t.label)}
+                  >
+                    <i>{i + 1}</i>
+                    <span className="theme-main">
+                      <b>{themeLabel(t.label)}</b>
+                      <small>
+                        {hitRegions.length} office
+                        {hitRegions.length > 1 ? "s" : ""} · {hits.length}{" "}
+                        concern{hits.length > 1 ? "s" : ""}
+                      </small>
+                    </span>
+                    <span className="theme-regions">
+                      {hitRegions.slice(0, 4).map((r) => (
+                        <em key={r}>{r}</em>
+                      ))}
+                      {hitRegions.length > 4 && (
+                        <em>+{hitRegions.length - 4}</em>
+                      )}
+                    </span>
+                    <ChevronRight />
+                  </button>
+                  {open && (
+                    <ul className="concerns">
+                      {hits.map((item, n) => (
+                        <ConcernLine key={n} item={item} showCategory />
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        ) : (
+          <p className="empty-state">No concerns match “{query}”.</p>
+        )}
+      </div>
+      <div className="panel">
+        <div className="panel-head">
+          <div>
+            <h3>Concerns by agenda area</h3>
+            <p>
+              {q
+                ? `${shown.length} of ${items.length} concerns match “${query}”`
+                : "Every concern reported, in Annex A order"}
+            </p>
+          </div>
+        </div>
+        <div className="cat-list">
+          {byCategory.map((c) => {
+            const hits = c.list.filter(matches),
+              open = openCat === c.key || !!q;
+            if (q && !hits.length) return null;
+            return (
+              <div className={open ? "cat open" : "cat"} key={c.key}>
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  onClick={() => setOpenCat(openCat === c.key ? "" : c.key)}
+                >
+                  <span className="cat-main">
+                    <b>{c.label}</b>
+                    <small>
+                      {hits.length} concern{hits.length === 1 ? "" : "s"} from{" "}
+                      {c.regions.size} office{c.regions.size === 1 ? "" : "s"}
+                    </small>
+                  </span>
+                  <span className="cat-bar" aria-hidden="true">
+                    <i
+                      style={{
+                        width:
+                          Math.round(
+                            (c.list.length /
+                              Math.max(
+                                1,
+                                ...byCategory.map((x) => x.list.length),
+                              )) *
+                              100,
+                          ) + "%",
+                      }}
+                    />
+                  </span>
+                  <ChevronRight />
+                </button>
+                {open && (
+                  <ul className="concerns">
+                    {hits.map((item, n) => (
+                      <ConcernLine key={n} item={item} />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </>
   );
 }
 function CheckRow({ label, value, ok, warn }) {
@@ -2269,29 +2852,49 @@ function CheckRow({ label, value, ok, warn }) {
 }
 function UserAccess({ account }) {
   const [users, setUsers] = useState([]),
+    [loading, setLoading] = useState(true),
     [message, setMessage] = useState(""),
     // A decision can succeed while its notification email fails; that needs to
     // read as a warning, not as a plain confirmation.
     [messageWarn, setMessageWarn] = useState(false);
   useEffect(() => {
-    api({ action: "listAccounts", accountToken: account.token })
-      .then((d) =>
-        setUsers(
-          (d.rows || []).map((u) => [
-            u.name,
-            u.email,
-            u.region,
-            u.role === "central_admin" ? "Administrator" : "CHEDRO User",
-            u.status === "Approved" ? "Active" : u.status,
-          ]),
-        ),
+    let alive = true;
+    cachedApi({ action: "listAccounts", accountToken: account.token })
+      .then(
+        (d) =>
+          alive &&
+          setUsers(
+            (d.rows || []).map((u) => [
+              u.name,
+              u.email,
+              u.region,
+              u.role === "central_admin" ? "Administrator" : "CHEDRO User",
+              u.status === "Approved" ? "Active" : u.status,
+            ]),
+          ),
       )
       .catch((e) => {
+        if (!alive) return;
         setMessage(e.message);
         setMessageWarn(true);
-      });
+      })
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
   }, [account.token]);
+  /** The row flips as soon as the button is pressed and rolls back if the write
+   * fails, so the queue never shows an approval Central Office did not make. */
   async function decide(email, approve) {
+    const before = users;
+    setUsers((us) =>
+      us.map((u) =>
+        u[1] === email
+          ? [...u.slice(0, 4), approve ? "Active" : "Rejected"]
+          : u,
+      ),
+    );
+    setMessage("");
     try {
       const d = await api({
         action: "approveAccount",
@@ -2299,25 +2902,21 @@ function UserAccess({ account }) {
         email,
         approve,
       });
-      setUsers((us) =>
-        us.map((u) =>
-          u[1] === email
-            ? [...u.slice(0, 4), approve ? "Active" : "Rejected"]
-            : u,
-        ),
-      );
+      invalidate("listAccounts");
       setMessage(
         d.message || (approve ? "Account approved." : "Account rejected."),
       );
       setMessageWarn(d.notified === false);
     } catch (e) {
+      setUsers(before);
       setMessage(e.message);
       setMessageWarn(true);
     }
   }
   return (
     <>
-      <div className="stats admin-stats">
+      {loading && <SkStats />}
+      <div className="stats admin-stats" hidden={loading}>
         <Stat
           icon={<Users />}
           n={String(users.filter((u) => u[4] === "Active").length)}
@@ -2362,7 +2961,8 @@ function UserAccess({ account }) {
             {users.filter((u) => u[4] === "Pending").length} pending
           </span>
         </div>
-        <div className="table-scroll">
+        {loading && <SkPanel rows={4} head={false} />}
+        <div className="table-scroll" hidden={loading}>
           <table>
             <thead>
               <tr>
