@@ -34,6 +34,9 @@ const REGIONS = [
 ];
 const STATUSES = ["For review", "Validated", "Needs revision"];
 const SUPERSEDED = "Superseded";
+// Mirrors the allowlist and bound enforced in Code.gs.
+const QUARTERS = ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"];
+const MAX_PARTICIPANTS = 1000000;
 /** Reporting year of a seeded or submitted row, matching year_() in Code.gs. */
 const yearOfRow = (r) =>
   (String(r.date || "").match(/(?:19|20)\d{2}/) ||
@@ -396,6 +399,10 @@ const actions = {
       throw fail("You can only submit reports for " + u.region + ".");
     const date = text(p.date, 30),
       quarter = text(p.quarter, 30);
+    if (QUARTERS.indexOf(quarter) < 0)
+      throw fail("Select a reporting quarter from the list.");
+    if (Number(p.participants) > MAX_PARTICIPANTS)
+      throw fail("Check the total participants figure.");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
       throw fail("Enter the consultation date as YYYY-MM-DD.");
     if (date > new Date().toISOString().slice(0, 10))

@@ -8,6 +8,12 @@
 * {
   box-sizing: border-box;
 }
+/* The UA rule for [hidden] is display:none, which any author display rule beats
+   -- so `hidden` on a grid or flex container silently does nothing. Skeleton
+   loaders relied on it and were rendering zero-valued cards underneath. */
+[hidden] {
+  display: none !important;
+}
 body {
   margin: 0;
 }
@@ -918,6 +924,28 @@ td b {
   color: #7e8897;
   line-height: 1.5;
   margin: 4px 0;
+}
+.insight > i {
+  flex: none;
+}
+.insight > div {
+  min-width: 0;
+}
+/* A concern quoted as the office wrote it, set apart from the derived lines
+   around it so it is clear which words are theirs. */
+.insight-quote {
+  margin: 6px 0 2px;
+  padding-left: 9px;
+  border-left: 2px solid #cfdcec;
+  font-size: 9px;
+  line-height: 1.55;
+  color: #566275;
+}
+.insight-quote::before {
+  content: "\201C";
+}
+.insight-quote::after {
+  content: "\201D";
 }
 .text-btn {
   border: 0;

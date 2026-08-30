@@ -324,6 +324,81 @@ const ACRONYMS = {
 };
 const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const themeLabel = (w) => ACRONYMS[w] || titleCase(w);
+/**
+ * What Central Office should take away from a reporting period, read out of the
+ * reports rather than asserted over them. Every line carries the number or the
+ * wording it came from: the old panel opened with "Student welfare is the most
+ * frequently documented area" whether or not it was, which made the whole
+ * summary untrustworthy the first time it was wrong.
+ */
+function synthesis(rows, items = concernIndex(rows)) {
+  if (!items.length) return [];
+  const out = [];
+  const byArea = CONCERN_FIELDS.map(([key, label]) => ({
+    label,
+    list: items.filter((i) => i.key === key),
+  }))
+    .filter((a) => a.list.length)
+    .sort((a, b) => b.list.length - a.list.length);
+  const top = byArea[0];
+  if (top) {
+    const offices = new Set(top.list.map((i) => i.region)).size;
+    // Naming a runner-up only when it genuinely ties avoids calling a clear
+    // lead a tie, and avoids calling a tie a clear lead.
+    const tied = byArea.filter((a) => a.list.length === top.list.length);
+    const from = `from ${offices} regional office${offices > 1 ? "s" : ""}`;
+    out.push({
+      // Naming both areas in a tie headline runs to two lines; the count leads
+      // and the areas follow in the body, where there is room for them.
+      title:
+        tied.length > 1
+          ? `${tied.length} agenda areas tied for the most concerns`
+          : `${top.label} drew the most concerns`,
+      body:
+        tied.length > 1
+          ? `${tied.map((a) => a.label).join(" and ")} — ${top.list.length} concerns each of the ${items.length} recorded this period, ${from}.`
+          : `${top.list.length} of the ${items.length} concerns recorded this period, ${from}.`,
+    });
+  }
+  const themes = recurringThemes(items),
+    shared = themes.filter((t) => t.regions.size > 1),
+    lead = shared[0] || themes[0];
+  if (lead)
+    out.push({
+      title: shared.length
+        ? `“${themeLabel(lead.label)}” recurs across ${lead.regions.size} CHEDROs`
+        : `“${themeLabel(lead.label)}” is the most repeated term`,
+      body: shared.length
+        ? `Raised in ${lead.items.length} separate concerns by ${[...lead.regions].join(", ")}.`
+        : `${lead.items.length} separate concerns from ${[...lead.regions][0]} mention it.`,
+    });
+  // The longest region-specific entry is the one an office took the most care
+  // to write out, which makes it the most useful thing to put in front of a
+  // reader who will not open every report.
+  const regional = items.filter((i) => i.key === "regionConcerns");
+  if (regional.length) {
+    const pick = [...regional].sort((a, b) => b.text.length - a.text.length)[0];
+    out.push({
+      title: `Region-specific matter raised by ${pick.region}`,
+      body: pick.text,
+      quote: true,
+    });
+  }
+  const pending = rows.filter((r) => r.status === "For review").length,
+    returned = rows.filter((r) => r.status === "Needs revision").length;
+  if (pending || returned)
+    out.push({
+      title: `${pending + returned} report${pending + returned > 1 ? "s" : ""} awaiting Central Office action`,
+      body:
+        [
+          pending ? `${pending} to review` : "",
+          returned ? `${returned} returned and not yet replaced` : "",
+        ]
+          .filter(Boolean)
+          .join(" · ") + ".",
+    });
+  return out;
+}
 
 const SIGNATORIES = [
   ["presidedBy", "Presided by"],
@@ -2110,14 +2185,6 @@ function Admin({ tab, setTab, account }) {
       (sum, row) => sum + Number(row.participants || 0),
       0,
     ),
-    themes = {
-      initiatives: periodRows.filter((r) => r.initiatives).length,
-      student: periodRows.filter((r) => r.student).length,
-      academic: periodRows.filter((r) => r.academic).length,
-      governance: periodRows.filter((r) => r.governance).length,
-      regionSpecific: periodRows.filter((r) => r.regionConcerns).length,
-    },
-    concerns = Object.values(themes).reduce((a, b) => a + Number(b || 0), 0),
     validated = periodRows.filter((r) => r.status === "Validated").length,
     attendanceCount = periodRows.filter((r) => r.attendanceFile).length,
     photoCount = periodRows.filter((r) => r.photoFiles).length,
@@ -2160,6 +2227,22 @@ function Admin({ tab, setTab, account }) {
       if (reports.some((r) => r.status === "For review")) return "For review";
       return reports[0].status || "Submitted";
     };
+  // Memoised on what these actually depend on. periodRows is a fresh array every
+  // render, so keying off it would rebuild the concern index and re-run keyword
+  // extraction on every keystroke in the submissions search — for a panel that
+  // is not even on screen at the time.
+  const periodConcerns = useMemo(
+    () => concernIndex(periodRows),
+    [live, period.quarter, period.year],
+  );
+  // The same unit the Themes tab reports, so the two screens cannot disagree
+  // about the period. This used to count sections filled in, which read as a
+  // concern count beside it and was a much smaller number.
+  const concerns = periodConcerns.length;
+  const synth = useMemo(
+    () => synthesis(periodRows, periodConcerns),
+    [periodConcerns],
+  );
   return (
     <>
       <div className="admin-top">
@@ -2253,9 +2336,9 @@ function Admin({ tab, setTab, account }) {
             <Stat
               icon={<FileText />}
               n={String(concerns)}
-              label="Concern sections completed"
+              label="Concerns raised"
               tone="amber"
-              tip="Agenda sections filled in across all reports. Open Themes & actions to read what was raised."
+              tip="Individual concerns recorded across every agenda section, counted the same way as the Themes & actions tab."
             />
             <Stat
               icon={<CheckCircle2 />}
@@ -2316,40 +2399,32 @@ function Admin({ tab, setTab, account }) {
                 </div>
                 <span className="ai">LIVE SUMMARY</span>
               </div>
-              <div className="insight">
-                <i>1</i>
-                <div>
-                  <b>Student welfare is the most frequently documented area</b>
-                  <p>
-                    {themes.student} submitted reports contain student welfare
-                    concerns requiring review or follow-through.
-                  </p>
-                </div>
-              </div>
-              <div className="insight">
-                <i>2</i>
-                <div>
-                  <b>Academic and policy matters remain significant</b>
-                  <p>
-                    {themes.academic} reports discuss curriculum or academic
-                    programs, while {themes.initiatives} discuss CHED
-                    initiatives and policies.
-                  </p>
-                </div>
-              </div>
-              <div className="insight">
-                <i>3</i>
-                <div>
-                  <b>{total - submitted} CHEDROs remain outstanding</b>
-                  <p>
-                    Measured against the {total}-office national baseline for{" "}
-                    {periodLabel}.
-                  </p>
-                </div>
-              </div>
-              <button className="text-btn" onClick={() => setTab("themes")}>
-                Open thematic analysis <ChevronRight />
-              </button>
+              {synth.length ? (
+                synth.map((s, i) => (
+                  <div className="insight" key={s.title}>
+                    <i>{i + 1}</i>
+                    <div>
+                      <b>{s.title}</b>
+                      {s.quote ? (
+                        <blockquote className="insight-quote">
+                          {s.body}
+                        </blockquote>
+                      ) : (
+                        <p>{s.body}</p>
+                      )}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="empty-state">
+                  No concerns have been recorded for {periodLabel} yet.
+                </p>
+              )}
+              {synth.length > 0 && (
+                <button className="text-btn" onClick={() => setTab("themes")}>
+                  Open thematic analysis <ChevronRight />
+                </button>
+              )}
             </div>
           </div>
           <div className="metric-grid">
@@ -2620,9 +2695,16 @@ function ConcernLine({ item, showCategory }) {
 function ThemesTab({ rows, periodLabel, loading }) {
   const [query, setQuery] = useState(""),
     [openTheme, setOpenTheme] = useState(""),
-    [openCat, setOpenCat] = useState("");
+    [openCat, setOpenCat] = useState(""),
+    // A search expands every matching area, so while one is running the toggle
+    // has to record what the reader collapsed rather than what they expanded -
+    // otherwise the control looks live and does nothing.
+    [closedCats, setClosedCats] = useState(() => new Set());
   const items = useMemo(() => concernIndex(rows), [rows]),
     themes = useMemo(() => recurringThemes(items), [items]);
+  // A new search is a fresh view; nothing the reader collapsed under the last
+  // one should still be collapsed under this one.
+  useEffect(() => setClosedCats(new Set()), [query]);
   const q = query.trim().toLowerCase(),
     matches = (i) =>
       !q ||
@@ -2640,14 +2722,28 @@ function ThemesTab({ rows, periodLabel, loading }) {
     ranked = (q ? base.filter((t) => t.items.some(matches)) : base).slice(0, 8),
     offices = new Set(items.map((i) => i.region)),
     byCategory = CONCERN_FIELDS.map(([key, label]) => {
-      const list = items.filter((i) => i.key === key);
+      const list = items.filter((i) => i.key === key),
+        // Everything shown about a row describes the same set, so a search
+        // narrows the office tally and the bar along with the concern count.
+        hits = list.filter(matches);
       return {
         key,
         label,
         list,
-        regions: new Set(list.map((i) => i.region)),
+        hits,
+        regions: new Set(hits.map((i) => i.region)),
       };
-    }).filter((c) => c.list.length);
+    }).filter((c) => c.list.length),
+    widest = Math.max(1, ...byCategory.map((c) => c.list.length)),
+    isCatOpen = (key) => (q ? !closedCats.has(key) : openCat === key),
+    toggleCat = (key) => {
+      if (!q) return setOpenCat(openCat === key ? "" : key);
+      setClosedCats((prev) => {
+        const next = new Set(prev);
+        next.has(key) ? next.delete(key) : next.add(key);
+        return next;
+      });
+    };
 
   if (loading)
     return (
@@ -2790,15 +2886,15 @@ function ThemesTab({ rows, periodLabel, loading }) {
         </div>
         <div className="cat-list">
           {byCategory.map((c) => {
-            const hits = c.list.filter(matches),
-              open = openCat === c.key || !!q;
+            const hits = c.hits,
+              open = isCatOpen(c.key);
             if (q && !hits.length) return null;
             return (
               <div className={open ? "cat open" : "cat"} key={c.key}>
                 <button
                   type="button"
                   aria-expanded={open}
-                  onClick={() => setOpenCat(openCat === c.key ? "" : c.key)}
+                  onClick={() => toggleCat(c.key)}
                 >
                   <span className="cat-main">
                     <b>{c.label}</b>
@@ -2810,15 +2906,7 @@ function ThemesTab({ rows, periodLabel, loading }) {
                   <span className="cat-bar" aria-hidden="true">
                     <i
                       style={{
-                        width:
-                          Math.round(
-                            (c.list.length /
-                              Math.max(
-                                1,
-                                ...byCategory.map((x) => x.list.length),
-                              )) *
-                              100,
-                          ) + "%",
+                        width: Math.round((hits.length / widest) * 100) + "%",
                       }}
                     />
                   </span>

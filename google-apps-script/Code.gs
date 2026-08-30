@@ -21,6 +21,13 @@ var OTP_TTL = 600,
   // by a corrected one. Superseded rows stay on the sheet for the audit trail
   // but are out of every count and every live view.
   SUPERSEDED = "Superseded",
+  // The one-live-report-per-quarter rule keys on this value, so it has to come
+  // from a fixed set. Left as free text, "Q3" and "3rd quarter" would each open
+  // their own bucket and a second report would slip past the duplicate check.
+  QUARTERS = ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"],
+  // A consultation cannot plausibly exceed this; anything above it is a typo or
+  // a bad client, and it would distort every national total it lands in.
+  MAX_PARTICIPANTS = 1000000,
   PORTAL_NAME = "CHED-OSDS Consultation & Dialogue Reporting Portal";
 function doPost(e) {
   try {
@@ -189,6 +196,10 @@ function submitDialogue_(p) {
     quarter = text_(p.quarter, 30);
   // The reporting year is read back off this column by both this file and the
   // portal, so it has to be stored in a shape that always carries one.
+  if (QUARTERS.indexOf(quarter) < 0)
+    throw new Error("Select a reporting quarter from the list.");
+  if (num_(p.participants) > MAX_PARTICIPANTS)
+    throw new Error("Check the total participants figure.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
     throw new Error("Enter the consultation date as YYYY-MM-DD.");
   if (
