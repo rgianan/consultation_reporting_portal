@@ -650,8 +650,20 @@ function App() {
     </div>
   );
 }
+/** The invitation token from the emailed link, if this page was opened from one. */
+function inviteTokenFromUrl() {
+  try {
+    return new URLSearchParams(window.location.search).get("invite") || "";
+  } catch {
+    return "";
+  }
+}
 function Login({ onLogin, notice }) {
-  const [mode, setMode] = useState("login"),
+  // Arriving on an invitation link opens straight into acceptance; there is
+  // nothing useful the recipient can do on the sign-in form yet.
+  const [inviteToken] = useState(inviteTokenFromUrl),
+    [invitee, setInvitee] = useState(null),
+    [mode, setMode] = useState(inviteToken ? "invite" : "login"),
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [name, setName] = useState(""),
@@ -729,6 +741,42 @@ function Login({ onLogin, notice }) {
       setRequestId("");
       setCode("");
       setPassword("");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Name the invitation before asking for a password, so the recipient can see
+  // which account and office they are about to set up.
+  useEffect(() => {
+    if (!inviteToken) return;
+    let alive = true;
+    api({ action: "inviteDetails", inviteToken })
+      .then((d) => alive && setInvitee(d))
+      .catch((e) => {
+        if (!alive) return;
+        setError(e.message);
+        setMode("login");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [inviteToken]);
+  async function acceptInvite(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const d = await api({ action: "acceptInvite", inviteToken, password });
+      setSuccess(d.message);
+      setPassword("");
+      setInvitee(null);
+      setMode("login");
+      setEmail(d.email);
+      // Drop the spent token from the address bar so a refresh does not reopen
+      // an acceptance screen for an invitation that no longer exists.
+      window.history.replaceState({}, "", window.location.pathname);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -819,14 +867,18 @@ function Login({ onLogin, notice }) {
               ? "Welcome back"
               : mode === "register"
                 ? "Request an account"
-                : "Reset your password"}
+                : mode === "invite"
+                  ? "Set up your account"
+                  : "Reset your password"}
           </h2>
           <p>
             {mode === "login"
               ? "Use your approved CHED account credentials."
               : mode === "register"
                 ? "Choose your CHED Regional Office. Central Office will verify and approve your request."
-                : "Verify your official email before choosing a new password."}
+                : mode === "invite"
+                  ? "Central Office created this account for you. Choose a password to finish setting it up."
+                  : "Verify your official email before choosing a new password."}
           </p>
           {notice && (
             <p className="login-notice">
@@ -834,7 +886,57 @@ function Login({ onLogin, notice }) {
               {notice}
             </p>
           )}
-          {mode === "recover" ? (
+          {mode === "invite" ? (
+            <form onSubmit={acceptInvite}>
+              {invitee ? (
+                <div className="verify-box account-box">
+                  <div className="verify-icon">
+                    <Mail />
+                  </div>
+                  <div className="verify-main">
+                    <b>{invitee.name}</b>
+                    <p>
+                      {invitee.email} ·{" "}
+                      {invitee.role === "central_admin"
+                        ? "Central Office Administrator"
+                        : invitee.region}
+                    </p>
+                    <small>
+                      Not you? Close this page and tell Central Office.
+                    </small>
+                  </div>
+                </div>
+              ) : (
+                <p className="login-notice">
+                  <Clock3 />
+                  Checking your invitation…
+                </p>
+              )}
+              <Field label="Choose a password" required>
+                <input
+                  type="password"
+                  minLength="12"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="At least 12 characters"
+                />
+              </Field>
+              {error && <p className="login-error">{error}</p>}
+              <button
+                className="login-submit"
+                disabled={busy || !invitee || password.length < 12}
+              >
+                {busy ? "Please wait…" : "Create my account"}
+              </button>
+              <button
+                type="button"
+                className="forgot"
+                onClick={() => switchMode("login")}
+              >
+                Back to sign in
+              </button>
+            </form>
+          ) : mode === "recover" ? (
             <form onSubmit={finishRecovery}>
               <Field label="Official email" required>
                 <input
@@ -2938,9 +3040,96 @@ function CheckRow({ label, value, ok, warn }) {
     </div>
   );
 }
+/** How a stored account status reads in the table. */
+const statusLabel = (s) => (s === "Approved" ? "Active" : s);
+const roleLabel = (r) =>
+  r === "central_admin" ? "Administrator" : "CHEDRO User";
+
+/** Create an account from Central Office. The invitee sets their own password,
+ * so this form never asks for one: an administrator who types a colleague's
+ * first password knows it, and the audit trail stops meaning anything. */
+function InviteForm({ busy, onCancel, onSubmit }) {
+  const [name, setName] = useState(""),
+    [email, setEmail] = useState(""),
+    [role, setRole] = useState("chedro_user"),
+    [region, setRegion] = useState("");
+  const admin = role === "central_admin";
+  return (
+    <form
+      className="invite-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit({ name, email, role, region: admin ? "" : region });
+      }}
+    >
+      <div className="fields two">
+        <Field label="Full name" required>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Juan Dela Cruz"
+          />
+        </Field>
+        <Field label="Official email" required>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={`name@${DOMAIN}`}
+          />
+        </Field>
+        <Field label="Portal role" required>
+          <select value={role} onChange={(e) => setRole(e.target.value)}>
+            <option value="chedro_user">CHEDRO User</option>
+            <option value="central_admin">Central Office Administrator</option>
+          </select>
+        </Field>
+        <Field label="CHED Regional Office" required={!admin}>
+          <select
+            value={admin ? "" : region}
+            disabled={admin}
+            onChange={(e) => setRegion(e.target.value)}
+          >
+            <option value="">
+              {admin ? "Central Office" : "Select a regional office"}
+            </option>
+            {!admin && regions.map((r) => <option key={r}>{r}</option>)}
+          </select>
+        </Field>
+      </div>
+      {admin && (
+        <p className="notice invite-warn">
+          <ShieldCheck />
+          <span>
+            Administrators can read every report and invite further accounts,
+            including other administrators. Every current administrator is
+            emailed when a new one is invited.
+          </span>
+        </p>
+      )}
+      <div className="form-actions">
+        <button type="button" className="secondary" onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          className="primary"
+          disabled={
+            busy || !name.trim() || !email.trim() || (!admin && !region)
+          }
+        >
+          <Mail />
+          {busy ? "Sending…" : "Send invitation"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function UserAccess({ account }) {
   const [users, setUsers] = useState([]),
     [loading, setLoading] = useState(true),
+    [adding, setAdding] = useState(false),
+    [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
     // A decision can succeed while its notification email fails; that needs to
     // read as a warning, not as a plain confirmation.
@@ -2948,19 +3137,7 @@ function UserAccess({ account }) {
   useEffect(() => {
     let alive = true;
     cachedApi({ action: "listAccounts", accountToken: account.token })
-      .then(
-        (d) =>
-          alive &&
-          setUsers(
-            (d.rows || []).map((u) => [
-              u.name,
-              u.email,
-              u.region,
-              u.role === "central_admin" ? "Administrator" : "CHEDRO User",
-              u.status === "Approved" ? "Active" : u.status,
-            ]),
-          ),
-      )
+      .then((d) => alive && setUsers(d.rows || []))
       .catch((e) => {
         if (!alive) return;
         setMessage(e.message);
@@ -2971,17 +3148,21 @@ function UserAccess({ account }) {
       alive = false;
     };
   }, [account.token]);
+
+  const patch = (email, changes) =>
+    setUsers((us) =>
+      us.map((u) => (u.email === email ? { ...u, ...changes } : u)),
+    );
+  const report = (d, fallback) => {
+    setMessage(d.message || fallback);
+    setMessageWarn(d.notified === false);
+  };
+
   /** The row flips as soon as the button is pressed and rolls back if the write
-   * fails, so the queue never shows an approval Central Office did not make. */
+   * fails, so the queue never shows a decision Central Office did not make. */
   async function decide(email, approve) {
     const before = users;
-    setUsers((us) =>
-      us.map((u) =>
-        u[1] === email
-          ? [...u.slice(0, 4), approve ? "Active" : "Rejected"]
-          : u,
-      ),
-    );
+    patch(email, { status: approve ? "Approved" : "Rejected" });
     setMessage("");
     try {
       const d = await api({
@@ -2991,47 +3172,120 @@ function UserAccess({ account }) {
         approve,
       });
       invalidate("listAccounts");
-      setMessage(
-        d.message || (approve ? "Account approved." : "Account rejected."),
-      );
-      setMessageWarn(d.notified === false);
+      report(d, approve ? "Account approved." : "Account rejected.");
     } catch (e) {
       setUsers(before);
       setMessage(e.message);
       setMessageWarn(true);
     }
   }
+
+  async function invite(form) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const d = await api({
+        action: "inviteAccount",
+        accountToken: account.token,
+        ...form,
+      });
+      invalidate("listAccounts");
+      // Appended from what the server accepted rather than from the form, so
+      // the row shows the address the invitation actually went to.
+      setUsers((us) => [
+        ...us,
+        {
+          name: form.name.trim(),
+          email: d.email,
+          region:
+            form.role === "central_admin" ? "Central Office" : form.region,
+          role: form.role,
+          status: "Invited",
+        },
+      ]);
+      setAdding(false);
+      report(d, "Invitation sent.");
+    } catch (e) {
+      setMessage(e.message);
+      setMessageWarn(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resend(email) {
+    setMessage("");
+    try {
+      report(
+        await api({
+          action: "resendInvite",
+          accountToken: account.token,
+          email,
+        }),
+        "Invitation resent.",
+      );
+    } catch (e) {
+      setMessage(e.message);
+      setMessageWarn(true);
+    }
+  }
+
+  async function revoke(email) {
+    const before = users;
+    patch(email, { status: "Rejected" });
+    setMessage("");
+    try {
+      const d = await api({
+        action: "revokeInvite",
+        accountToken: account.token,
+        email,
+      });
+      invalidate("listAccounts");
+      report(d, "Invitation withdrawn.");
+    } catch (e) {
+      setUsers(before);
+      setMessage(e.message);
+      setMessageWarn(true);
+    }
+  }
+
+  const active = users.filter((u) => u.status === "Approved"),
+    pending = users.filter((u) => u.status === "Pending"),
+    invited = users.filter((u) => u.status === "Invited"),
+    offices = new Set(
+      active.filter((u) => u.role !== "central_admin").map((u) => u.region),
+    );
   return (
     <>
       {loading && <SkStats />}
       <div className="stats admin-stats" hidden={loading}>
         <Stat
           icon={<Users />}
-          n={String(users.filter((u) => u[4] === "Active").length)}
+          n={String(active.length)}
           label="Active users"
           tone="blue"
+          tip="Accounts that can sign in today. Invited accounts are not counted until the person sets a password."
         />
         <Stat
           icon={<Building2 />}
-          n={String(
-            new Set(
-              users.filter((u) => u[2] !== "Central Office").map((u) => u[2]),
-            ).size,
-          )}
+          n={String(offices.size)}
           label="Offices represented"
           tone="green"
+          tip="Regional offices with at least one active account."
         />
         <Stat
           icon={<Clock3 />}
-          n={String(users.filter((u) => u[4] === "Pending").length)}
-          label="Pending approval"
+          n={String(pending.length + invited.length)}
+          label="Awaiting action"
           tone="amber"
+          tip="Self-registrations waiting on approval, plus invitations that have not been accepted."
         />
         <Stat
           icon={<ShieldCheck />}
-          n={String(users.filter((u) => u[3] === "Administrator").length)}
-          label="Central administrator"
+          n={String(active.filter((u) => u.role === "central_admin").length)}
+          label="Administrators"
           tone="purple"
+          tip="Central Office accounts. They can read every report and invite further accounts."
         />
       </div>
       {message && (
@@ -3043,12 +3297,31 @@ function UserAccess({ account }) {
         <div className="panel-head">
           <div>
             <h3>Account requests and access</h3>
-            <p>Verify each user’s identity and selected regional office</p>
+            <p>Invite colleagues, and verify each self-registration</p>
           </div>
-          <span className="review-count">
-            {users.filter((u) => u[4] === "Pending").length} pending
-          </span>
+          <div className="users-head-actions">
+            {pending.length > 0 && (
+              <span className="review-count">{pending.length} pending</span>
+            )}
+            <button
+              className="invite-btn"
+              onClick={() => {
+                setAdding((v) => !v);
+                setMessage("");
+              }}
+            >
+              {adding ? <X /> : <FilePlus2 />}
+              {adding ? "Close" : "Add user"}
+            </button>
+          </div>
         </div>
+        {adding && (
+          <InviteForm
+            busy={busy}
+            onCancel={() => setAdding(false)}
+            onSubmit={invite}
+          />
+        )}
         {loading && <SkPanel rows={4} head={false} />}
         <div className="table-scroll" hidden={loading}>
           <table>
@@ -3056,7 +3329,7 @@ function UserAccess({ account }) {
               <tr>
                 <th>User</th>
                 <th>Official email</th>
-                <th>Selected office</th>
+                <th>Office</th>
                 <th>Role</th>
                 <th>Status</th>
                 <th></th>
@@ -3064,27 +3337,36 @@ function UserAccess({ account }) {
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u[1]}>
+                <tr key={u.email}>
                   <td>
-                    <b>{u[0]}</b>
+                    <b>{u.name}</b>
                   </td>
-                  <td>{u[1]}</td>
-                  <td>{u[2]}</td>
-                  <td>{u[3]}</td>
+                  <td>{u.email}</td>
+                  <td>{u.region}</td>
+                  <td>{roleLabel(u.role)}</td>
                   <td>
-                    <span className={"account-status " + u[4].toLowerCase()}>
-                      {u[4]}
+                    <span
+                      className={
+                        "account-status " + statusLabel(u.status).toLowerCase()
+                      }
+                    >
+                      {statusLabel(u.status)}
                     </span>
                   </td>
                   <td>
-                    {u[4] === "Pending" ? (
+                    {u.status === "Pending" ? (
                       <div className="approval-actions">
-                        <button onClick={() => decide(u[1], true)}>
+                        <button onClick={() => decide(u.email, true)}>
                           Approve
                         </button>
-                        <button onClick={() => decide(u[1], false)}>
+                        <button onClick={() => decide(u.email, false)}>
                           Reject
                         </button>
+                      </div>
+                    ) : u.status === "Invited" ? (
+                      <div className="approval-actions">
+                        <button onClick={() => resend(u.email)}>Resend</button>
+                        <button onClick={() => revoke(u.email)}>Revoke</button>
                       </div>
                     ) : (
                       <span className="no-action">—</span>
@@ -3099,16 +3381,20 @@ function UserAccess({ account }) {
       <div className="access-note">
         <LockKeyhole />
         <div>
-          <b>Account approval policy</b>
+          <b>How accounts are created</b>
           <p>
-            CHEDRO personnel select their regional office during sign-up.
-            Central Office must verify that assignment before approval. Once
-            approved, the region is locked to the account and automatically
-            applied to every report.
+            Central Office can invite a colleague directly: the account is
+            created with no password and the person sets their own from the
+            emailed link, which expires in seven days. CHEDRO personnel can also
+            register themselves and pick a regional office, which Central Office
+            must verify before approving. Either way the region is locked to the
+            account once it is active, and is applied to every report it
+            submits.
           </p>
         </div>
       </div>
     </>
   );
 }
+
 createRoot(document.getElementById("root")).render(<App />);

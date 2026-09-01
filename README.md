@@ -84,6 +84,45 @@ second script bound to a separate Sheet and Drive folder and point `.env` at tha
 6. Copy that `/exec` URL into `.env` as `VITE_GAS_WEB_APP_URL`, which also switches the dev server off the mock backend.
 7. CHEDRO personnel create their own account and select their regional office. A Central Administrator verifies and approves the request before the account can sign in.
 
+### Adding users from Central Office
+
+**Admin → User access → Add user.** Fill in the name, official email, role and —
+for a CHEDRO account — the regional office. The person is emailed a link and
+sets their own password; the invitation expires after seven days.
+
+The form never asks for a password, deliberately. An administrator who types a
+colleague's first password knows it, which defeats the point of hashing every
+password in the sheet and makes the audit trail unreliable: actions attributed
+to that user are no longer provably theirs. The account is stored with
+`Account_Status = Invited`, an empty password hash, and a signed token in
+`Invite_Hash` / `Invite_Expires` — columns the Users sheet has carried from the
+start for exactly this.
+
+While an invitation is outstanding the row shows **Invited**, with **Resend**
+(which retires the previous token, so a forwarded invitation stops working) and
+**Revoke**. An invited account cannot sign in until it is accepted.
+
+Self-registration still works alongside this: CHEDRO personnel can register and
+pick an office, which Central Office approves from the same screen.
+
+A **rejected** account — whether a declined self-registration or a withdrawn
+invitation — releases its email address. Registering or inviting that address
+again rewrites the existing row rather than adding a second one, which is what
+the rejection email means when it tells an applicant to "register again with
+the correct office". Active and invited addresses stay protected.
+
+Approve and Reject apply only to self-registrations. An outstanding invitation
+is managed with **Resend** or **Revoke** — approving one would mark the account
+active while it still had no password, so it would look usable and refuse every
+sign-in.
+
+**Administrators can invite other administrators.** This exists so the portal is
+not one lost account away from needing the Users sheet edited by hand. It is
+privilege escalation surface, so it is fenced: the action is audited as
+`admin_invited`, **every** current administrator is emailed when a new one is
+invited, and administrators still cannot approve, reject or modify one another —
+`approveAccount_` only ever touches `chedro_user` rows.
+
 ### OTP_SECRET is also the password pepper
 
 `setupPortal()` generates `OTP_SECRET` once. It signs verification codes **and**

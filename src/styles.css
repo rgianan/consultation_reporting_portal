@@ -1540,7 +1540,55 @@ td b {
   background: #173d70 !important;
   color: white !important;
   border-radius: 7px;
-  padding: 8px 11px;
+  padding: 8px 12px;
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.invite-btn svg {
+  width: 14px;
+}
+.users-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* The add-user form sits between the panel head and the table it will add a
+   row to, so it reads as part of that list rather than as a separate screen. */
+.invite-form {
+  padding: 20px 22px 18px;
+  border-bottom: 1px solid #edf0f4;
+  background: #fafbfd;
+}
+.invite-form .form-actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+}
+.invite-form select:disabled {
+  background: #eef1f5;
+  color: #97a0ad;
+}
+.invite-warn {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 14px 0 0;
+  background: #fff4da;
+  color: #7a5410;
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.invite-warn svg {
+  width: 15px;
+  flex: none;
 }
 .account-status {
   font-size: 8px;

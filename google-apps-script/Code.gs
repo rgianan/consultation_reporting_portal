@@ -25,6 +25,28 @@ var OTP_TTL = 600,
   // from a fixed set. Left as free text, "Q3" and "3rd quarter" would each open
   // their own bucket and a second report would slip past the duplicate check.
   QUARTERS = ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"],
+  REGIONS = [
+    "NCR",
+    "CAR",
+    "Region I",
+    "Region II",
+    "Region III",
+    "Region IV-A",
+    "MIMAROPA",
+    "Region V",
+    "Region VI",
+    "NIR",
+    "Region VII",
+    "Region VIII",
+    "Region IX",
+    "Region X",
+    "Region XI",
+    "Region XII",
+    "CARAGA",
+  ],
+  CENTRAL_OFFICE = "Central Office",
+  // How long a Central Office invitation stays usable, in days.
+  INVITE_TTL_DAYS = 7,
   // A consultation cannot plausibly exceed this; anything above it is a typo or
   // a bad client, and it would distort every national total it lands in.
   MAX_PARTICIPANTS = 1000000,
@@ -40,6 +62,11 @@ function doPost(e) {
     if (a === "registerAccount") return registerAccount_(p);
     if (a === "approveAccount") return approveAccount_(p);
     if (a === "listAccounts") return listAccounts_(p);
+    if (a === "inviteAccount") return inviteAccount_(p);
+    if (a === "resendInvite") return resendInvite_(p);
+    if (a === "revokeInvite") return revokeInvite_(p);
+    if (a === "inviteDetails") return inviteDetails_(p);
+    if (a === "acceptInvite") return acceptInvite_(p);
     if (a === "listRegionalSubmissions") return listRegionalSubmissions_(p);
     if (a === "submitDialogue") return submitDialogue_(p);
     if (a === "adminDashboard") return adminDashboard_(p);
@@ -538,6 +565,10 @@ function accountLogin_(p) {
   var found = findAccount_(email);
   // These two test no password, so they are not guessable and are not counted.
   // They do disclose that an account exists; narrowing that is a separate change.
+  if (found && found.row.Account_Status === "Invited")
+    throw new Error(
+      "Your account has not been set up yet. Open the invitation email from Central Office to choose a password.",
+    );
   if (found && found.row.Account_Status === "Pending")
     throw new Error("Your account is awaiting Central Office approval.");
   if (found && found.row.Account_Status === "Rejected")
@@ -585,51 +616,42 @@ function registerAccount_(p) {
   var email = email_(p.email),
     password = String(p.password || ""),
     name = field_(p.name, 200, "Full name"),
-    region = text_(p.region, 80),
-    allowed = [
-      "NCR",
-      "CAR",
-      "Region I",
-      "Region II",
-      "Region III",
-      "Region IV-A",
-      "MIMAROPA",
-      "Region V",
-      "Region VI",
-      "NIR",
-      "Region VII",
-      "Region VIII",
-      "Region IX",
-      "Region X",
-      "Region XI",
-      "Region XII",
-      "CARAGA",
-    ];
-  if (!email || !name || allowed.indexOf(region) < 0)
+    region = text_(p.region, 80);
+  if (!email || !name || REGIONS.indexOf(region) < 0)
     throw new Error(
       "Enter your name, official email and CHED Regional Office.",
     );
   domain_(email, config_());
   if (password.length < 12)
     throw new Error("Use a password of at least 12 characters.");
-  if (findAccount_(email))
-    throw new Error("An account request already exists for this email.");
-  var salt = Utilities.getUuid(),
-    sh = sheet_("Users", usersHeaders_());
-  sh.appendRow([
-    email,
-    pwHash_(password, salt),
-    salt,
-    name,
-    "chedro_user",
-    region,
-    false,
-    "Pending",
-    "",
-    "",
-    new Date(),
-    "",
-  ]);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    // Inside the lock, so two simultaneous registrations for the same address
+    // cannot both pass this check and append a row each.
+    var existing = findAccount_(email);
+    if (existing && !reclaimable_(existing))
+      throw new Error("An account request already exists for this email.");
+    var salt = Utilities.getUuid(),
+      row = [
+        email,
+        pwHash_(password, salt),
+        salt,
+        name,
+        "chedro_user",
+        region,
+        false,
+        "Pending",
+        "",
+        "",
+        new Date(),
+        "",
+      ];
+    if (existing) writeRow_(existing, row);
+    else sheet_("Users", usersHeaders_()).appendRow(row);
+  } finally {
+    lock.releaseLock();
+  }
   tryAudit_("account_requested", "", email, region);
   return out_({
     ok: true,
@@ -644,6 +666,18 @@ function approveAccount_(p) {
     f = findAccount_(email);
   if (!f || f.row.Role !== "chedro_user")
     throw new Error("Account request not found.");
+  // Approving an invitation would mark it Active and Approved while it still
+  // has no password: the account would show as usable, refuse every sign-in,
+  // and its invitation would read as already used. Invitations are managed by
+  // resending or revoking them, never through this action.
+  if (f.row.Account_Status === "Invited")
+    throw new Error(
+      "This account has an outstanding invitation. Resend or revoke it instead.",
+    );
+  if (approve && !f.row.Password_Hash)
+    throw new Error(
+      "This account has no password set, so it cannot be approved.",
+    );
   f.sheet.getRange(f.index + 1, f.map.Active + 1).setValue(approve);
   f.sheet
     .getRange(f.index + 1, f.map.Account_Status + 1)
@@ -827,13 +861,24 @@ function emailBody_(o) {
     (o.next
       ? '<p style="margin:0 0 20px;font-size:14px">' + esc_(o.next) + "</p>"
       : "") +
-    (o.cta === false
-      ? ""
-      : '<p style="margin:0 0 22px"><a href="' +
-        esc_(url) +
+    // o.link overrides the generic button with a specific destination, which is
+    // what an invitation needs: the portal is no use to the recipient until
+    // they have followed the token in this link.
+    (o.link
+      ? '<p style="margin:0 0 22px"><a href="' +
+        esc_(o.link.url) +
         '" style="background:#102b54;color:#ffffff;text-decoration:none;' +
         'font-size:13px;font-weight:700;padding:11px 20px;border-radius:6px;' +
-        'display:inline-block">Open the portal</a></p>') +
+        'display:inline-block">' +
+        esc_(o.link.label) +
+        "</a></p>"
+      : o.cta === false
+        ? ""
+        : '<p style="margin:0 0 22px"><a href="' +
+          esc_(url) +
+          '" style="background:#102b54;color:#ffffff;text-decoration:none;' +
+          'font-size:13px;font-weight:700;padding:11px 20px;border-radius:6px;' +
+          'display:inline-block">Open the portal</a></p>') +
     '<p style="margin:0;font-size:11px;color:#7d8795">Automated message from ' +
     "the " +
     esc_(PORTAL_NAME) +
@@ -846,11 +891,303 @@ function emailBody_(o) {
   if (o.code) lines.push("  " + o.code, "");
   if (o.callout) lines.push(o.callout.title, o.callout.body, "");
   if (o.next) lines.push(o.next, "");
-  if (o.cta !== false) lines.push(url, "");
+  // The plain-text half has to carry the link too, or a recipient on a text
+  // client has no way to accept an invitation at all.
+  if (o.link) lines.push(o.link.label + ":", o.link.url, "");
+  else if (o.cta !== false) lines.push(url, "");
   lines.push(
     "Automated message from the " + PORTAL_NAME + ". Please do not reply.",
   );
   return { html: html, text: lines.join("\n") };
+}
+// ---- Central Office invitations --------------------------------------------
+/**
+ * Create an account from Central Office and email the person an invitation.
+ *
+ * The invitee sets their own password. An administrator who types a colleague's
+ * first password knows it, which defeats the point of hashing every password in
+ * the sheet and makes the audit trail unreliable, since actions attributed to
+ * that user are no longer provably theirs. The Users sheet has carried
+ * Invite_Hash and Invite_Expires from the start for exactly this.
+ */
+function inviteAccount_(p) {
+  var admin = accountSession_(p.accountToken, ["central_admin"]),
+    email = email_(p.email),
+    name = field_(p.name, 200, "Full name"),
+    role = text_(p.role, 40) || "chedro_user",
+    region = role === "central_admin" ? CENTRAL_OFFICE : text_(p.region, 80);
+  if (role !== "chedro_user" && role !== "central_admin")
+    throw new Error("Choose a portal role for this account.");
+  if (!email || !name)
+    throw new Error("Enter the name and official email address.");
+  if (role === "chedro_user" && REGIONS.indexOf(region) < 0)
+    throw new Error("Select the CHED Regional Office for this account.");
+  domain_(email, config_());
+  var token = Utilities.getUuid() + Utilities.getUuid(),
+    expires = new Date().getTime() + INVITE_TTL_DAYS * 86400000,
+    lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var existing = findAccount_(email);
+    if (existing && !reclaimable_(existing))
+      throw new Error("An account already exists for this email address.");
+    var row = [
+      email,
+      "",
+      "",
+      name,
+      role,
+      region,
+      false,
+      "Invited",
+      sign_("invite:" + token),
+      expires,
+      new Date(),
+      "",
+    ];
+    if (existing) writeRow_(existing, row);
+    else sheet_("Users", usersHeaders_()).appendRow(row);
+  } finally {
+    lock.releaseLock();
+  }
+  tryAudit_(
+    role === "central_admin" ? "admin_invited" : "account_invited",
+    "",
+    admin.email,
+    email + " / " + region,
+  );
+  var notice = sendInvite_(email, name, role, region, token, admin.email);
+  // Minting another administrator widens who can mint administrators, so the
+  // people who already hold that power are told it happened. Best-effort: the
+  // account row is already written, and letting this throw would report a
+  // completed invitation as a failure the admin would then retry.
+  if (role === "central_admin")
+    try {
+      notifyAdminsOfNewAdmin_(email, name, admin.email);
+    } catch (notifyErr) {
+      tryAudit_(
+        "admin_notice_failed",
+        "",
+        admin.email,
+        email + " / " + (notifyErr && notifyErr.message),
+      );
+    }
+  return out_({
+    ok: true,
+    email: email,
+    notified: notice.sent,
+    message: notice.sent
+      ? "Invitation sent to " + email + "."
+      : "Account created, but the invitation email failed: " + notice.warning,
+  });
+}
+/** Issue a fresh token for an outstanding invitation and send it again. */
+function resendInvite_(p) {
+  var admin = accountSession_(p.accountToken, ["central_admin"]),
+    email = email_(p.email),
+    f = findAccount_(email);
+  if (!f || f.row.Account_Status !== "Invited")
+    throw new Error("No outstanding invitation for this email address.");
+  var token = Utilities.getUuid() + Utilities.getUuid(),
+    expires = new Date().getTime() + INVITE_TTL_DAYS * 86400000;
+  // Writing the new token retires the old one, so an invitation that was
+  // forwarded or intercepted stops working the moment it is resent.
+  f.sheet
+    .getRange(f.index + 1, f.map.Invite_Hash + 1)
+    .setValue(sign_("invite:" + token));
+  f.sheet.getRange(f.index + 1, f.map.Invite_Expires + 1).setValue(expires);
+  tryAudit_("invite_resent", "", admin.email, email);
+  var notice = sendInvite_(
+    email,
+    f.row.Display_Name,
+    f.row.Role,
+    f.row.Region,
+    token,
+    admin.email,
+  );
+  return out_({
+    ok: true,
+    notified: notice.sent,
+    message: notice.sent
+      ? "Invitation resent to " + email + "."
+      : "A new invitation was issued but could not be emailed: " +
+        notice.warning,
+  });
+}
+/** Withdraw an invitation that has not been accepted. */
+function revokeInvite_(p) {
+  var admin = accountSession_(p.accountToken, ["central_admin"]),
+    email = email_(p.email),
+    f = findAccount_(email);
+  if (!f || f.row.Account_Status !== "Invited")
+    throw new Error("No outstanding invitation for this email address.");
+  f.sheet.getRange(f.index + 1, f.map.Account_Status + 1).setValue("Rejected");
+  f.sheet.getRange(f.index + 1, f.map.Invite_Hash + 1).setValue("");
+  f.sheet.getRange(f.index + 1, f.map.Invite_Expires + 1).setValue("");
+  tryAudit_("invite_revoked", "", admin.email, email);
+  return out_({ ok: true, message: "Invitation withdrawn." });
+}
+/** Look up an invitation by its token so the acceptance screen can name who it
+ * is for. The token is the secret and only the invitee holds it, so returning
+ * the address it was sent to discloses nothing they do not already know. */
+function inviteDetails_(p) {
+  var f = findInvite_(p.inviteToken);
+  return out_({
+    ok: true,
+    email: f.row.Email,
+    name: f.row.Display_Name,
+    role: f.row.Role,
+    region: f.row.Region,
+  });
+}
+/** Accept an invitation: the invitee sets the first password on the account. */
+function acceptInvite_(p) {
+  var password = String(p.password || "");
+  if (password.length < 12)
+    throw new Error("Use a password of at least 12 characters.");
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    return acceptInviteLocked_(p, password);
+  } finally {
+    lock.releaseLock();
+  }
+}
+/** Held under the script lock so two clicks on the same link cannot both find
+ * the invitation live and race to set different passwords on the account. */
+function acceptInviteLocked_(p, password) {
+  var f = findInvite_(p.inviteToken),
+    email = email_(f.row.Email),
+    salt = Utilities.getUuid();
+  f.sheet.getRange(f.index + 1, f.map.Password_Salt + 1).setValue(salt);
+  f.sheet
+    .getRange(f.index + 1, f.map.Password_Hash + 1)
+    .setValue(pwHash_(password, salt));
+  f.sheet.getRange(f.index + 1, f.map.Account_Status + 1).setValue("Approved");
+  f.sheet.getRange(f.index + 1, f.map.Active + 1).setValue(true);
+  // Single use: the token is spent whether or not the tab stays open.
+  f.sheet.getRange(f.index + 1, f.map.Invite_Hash + 1).setValue("");
+  f.sheet.getRange(f.index + 1, f.map.Invite_Expires + 1).setValue("");
+  tryAudit_("invite_accepted", "", email, f.row.Region);
+  return out_({
+    ok: true,
+    email: email,
+    message: "Your account is ready. You can now sign in.",
+  });
+}
+/** The row an invitation token belongs to, or a refusal. Matched on the signed
+ * token rather than on an email supplied beside it, so a caller cannot point
+ * someone else's token at a row of their choosing. */
+function findInvite_(token) {
+  var t = text_(token, 120);
+  if (!t) throw new Error("This invitation link is not valid.");
+  var wanted = sign_("invite:" + t),
+    sh = sheet_("Users", usersHeaders_()),
+    v = sh.getDataRange().getValues(),
+    h = v[0],
+    map = {};
+  h.forEach(function (x, i) {
+    map[x] = i;
+  });
+  for (var i = 1; i < v.length; i++) {
+    if (!v[i][map.Invite_Hash] || String(v[i][map.Invite_Hash]) !== wanted)
+      continue;
+    if (String(v[i][map.Account_Status]) !== "Invited")
+      throw new Error("This invitation has already been used.");
+    if (Number(v[i][map.Invite_Expires]) < new Date().getTime())
+      throw new Error(
+        "This invitation has expired. Ask Central Office to send a new one.",
+      );
+    var row = {};
+    h.forEach(function (x, j) {
+      row[x] = v[i][j];
+    });
+    return { sheet: sh, index: i, map: map, row: row };
+  }
+  throw new Error("This invitation link is not valid.");
+}
+/** Send one invitation. Counted against the same hourly mail ceiling as the
+ * reset codes, so a runaway client cannot drain the daily quota through here. */
+function sendInvite_(email, name, role, region, token, actorEmail) {
+  if (
+    bump_(windowKey_("otpmail", OTP_GLOBAL_WINDOW), OTP_GLOBAL_WINDOW) >
+    OTP_GLOBAL_CAP
+  ) {
+    tryAudit_("otp_quota_blocked", "", actorEmail, "Invitation to " + email);
+    return {
+      sent: false,
+      warning: "the portal has reached its hourly email limit.",
+    };
+  }
+  return notify_(
+    email,
+    PORTAL_NAME + ": You have been invited to the portal",
+    emailBody_({
+      heading: "Set up your portal account",
+      intro:
+        "Central Office has created a portal account for you. Open the link below to choose a password, then sign in.",
+      details: [
+        ["Name", name],
+        ["Sign in with", email],
+        [
+          role === "central_admin" ? "Role" : "Regional office",
+          role === "central_admin" ? "Central Office Administrator" : region,
+        ],
+        ["Invitation valid for", INVITE_TTL_DAYS + " days"],
+      ],
+      next:
+        "Choose a password of at least 12 characters. If you were not expecting this invitation, ignore this email and tell Central Office.",
+      cta: false,
+      link: {
+        url: portalUrl_() + "?invite=" + encodeURIComponent(token),
+        label: "Accept the invitation",
+      },
+    }),
+    actorEmail,
+  );
+}
+/** Every approved Central Office address. */
+function adminEmails_() {
+  var v = sheet_("Users", usersHeaders_()).getDataRange().getValues(),
+    map = {},
+    out = [];
+  v[0].forEach(function (x, i) {
+    map[x] = i;
+  });
+  for (var i = 1; i < v.length; i++)
+    if (
+      String(v[i][map.Role]) === "central_admin" &&
+      String(v[i][map.Account_Status]) === "Approved"
+    ) {
+      var e = email_(v[i][map.Email]);
+      if (e) out.push(e);
+    }
+  return out;
+}
+/** Tell the existing administrators that another one now exists. */
+function notifyAdminsOfNewAdmin_(email, name, actorEmail) {
+  adminEmails_().forEach(function (to) {
+    if (to === email) return;
+    notify_(
+      to,
+      PORTAL_NAME + ": A new Central Office administrator was invited",
+      emailBody_({
+        heading: "A new administrator has been invited",
+        intro:
+          "Someone with Central Office access has invited another administrator. Administrators can read every report and invite further accounts, so this notice goes to all of them.",
+        details: [
+          ["New administrator", name],
+          ["Email", email],
+          ["Invited by", actorEmail],
+          ["When", stamp_()],
+        ],
+        next:
+          "If you did not expect this, speak to the other administrators before the invitation is accepted. It can be withdrawn from User access.",
+        cta: false,
+      }),
+      actorEmail,
+    );
+  });
 }
 function listAccounts_(p) {
   accountSession_(p.accountToken, ["central_admin"]);
@@ -938,6 +1275,21 @@ function authError_(message) {
   var e = new Error(message);
   e.code = "SESSION";
   return e;
+}
+/** Overwrite an existing Users row in one call. */
+function writeRow_(f, row) {
+  f.sheet.getRange(f.index + 1, 1, 1, row.length).setValues([row]);
+}
+/**
+ * A rejected account still occupies its email address. Without this the portal
+ * contradicts itself: the rejection email tells the applicant to "register
+ * again with the correct office", and registration then refuses because a row
+ * already exists. The same trap catches an administrator who revokes an
+ * invitation and wants to reissue it. Rejected rows are therefore reusable -
+ * the row is rewritten rather than a second one appended.
+ */
+function reclaimable_(f) {
+  return !!f && String(f.row.Account_Status) === "Rejected";
 }
 function findAccount_(email) {
   var sh = sheet_("Users", usersHeaders_()),

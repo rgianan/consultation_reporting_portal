@@ -37,6 +37,8 @@ const SUPERSEDED = "Superseded";
 // Mirrors the allowlist and bound enforced in Code.gs.
 const QUARTERS = ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"];
 const MAX_PARTICIPANTS = 1000000;
+const CENTRAL_OFFICE = "Central Office";
+const INVITE_TTL_DAYS = 7;
 /** Reporting year of a seeded or submitted row, matching year_() in Code.gs. */
 const yearOfRow = (r) =>
   (String(r.date || "").match(/(?:19|20)\d{2}/) ||
@@ -202,6 +204,22 @@ const newToken = () =>
   Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 const findUser = (e) => db.users.find((u) => u.email === asEmail(e));
+/** Mirrors reclaimable_(): a rejected row still holds its email address, so
+ * it is rewritten rather than blocking that address forever. */
+const reclaimable = (u) => !!u && u.status === "Rejected";
+/** Mirrors findInvite_(): matched on the token, never on a supplied email. */
+function findInvite(token) {
+  const t = String(token || "");
+  const u = t && db.users.find((x) => x.inviteToken && x.inviteToken === t);
+  if (!u) throw fail("This invitation link is not valid.");
+  if (u.status !== "Invited")
+    throw fail("This invitation has already been used.");
+  if (Number(u.inviteExpires) < Date.now())
+    throw fail(
+      "This invitation has expired. Ask Central Office to send a new one.",
+    );
+  return u;
+}
 
 function session(t, roles) {
   const s = db.sessions.get(String(t || ""));
@@ -306,19 +324,129 @@ const actions = {
     requireDomain(email);
     if (String(p.password || "").length < 12)
       throw fail("Use a password of at least 12 characters.");
-    if (findUser(email))
+    const existing = findUser(email);
+    if (existing && !reclaimable(existing))
       throw fail("An account request already exists for this email.");
-    db.users.push({
+    const fresh = {
       email,
       password: String(p.password),
       name,
       role: "chedro_user",
       region,
       status: "Pending",
-    });
+      inviteToken: "",
+      inviteExpires: 0,
+    };
+    if (existing) Object.assign(existing, fresh);
+    else db.users.push(fresh);
     return {
       message:
         "Account request submitted. Central Office will review your regional assignment before you can sign in.",
+    };
+  },
+
+  // ---- Central Office invitations, mirroring Code.gs ----
+  inviteAccount(p) {
+    const admin = session(p.accountToken, ["central_admin"]);
+    const email = asEmail(p.email),
+      name = field(p.name, 200, "Full name"),
+      role = text(p.role, 40) || "chedro_user",
+      region = role === "central_admin" ? CENTRAL_OFFICE : text(p.region, 80);
+    if (role !== "chedro_user" && role !== "central_admin")
+      throw fail("Choose a portal role for this account.");
+    if (!email || !name)
+      throw fail("Enter the name and official email address.");
+    if (role === "chedro_user" && REGIONS.indexOf(region) < 0)
+      throw fail("Select the CHED Regional Office for this account.");
+    requireDomain(email);
+    const existing = findUser(email);
+    if (existing && !reclaimable(existing))
+      throw fail("An account already exists for this email address.");
+    const token = newToken();
+    const fresh = {
+      email,
+      password: "",
+      name,
+      role,
+      region,
+      status: "Invited",
+      inviteToken: token,
+      inviteExpires: Date.now() + INVITE_TTL_DAYS * 86400000,
+    };
+    if (existing) Object.assign(existing, fresh);
+    else db.users.push(fresh);
+    mail(
+      email,
+      PORTAL_NAME + ": You have been invited to the portal",
+      "Set up your portal account.\n    Sign in with: " +
+        email +
+        "\n    " +
+        (role === "central_admin"
+          ? "Role: Central Office Administrator"
+          : "Regional office: " + region) +
+        "\n    Accept the invitation: /?invite=" +
+        token,
+    );
+    if (role === "central_admin")
+      db.users
+        .filter((u) => u.role === "central_admin" && u.status === "Approved")
+        .forEach((a) =>
+          mail(
+            a.email,
+            PORTAL_NAME + ": A new Central Office administrator was invited",
+            name + " (" + email + ") was invited by " + admin.email + ".",
+          ),
+        );
+    return {
+      email,
+      notified: true,
+      message: "Invitation sent to " + email + ".",
+    };
+  },
+
+  resendInvite(p) {
+    session(p.accountToken, ["central_admin"]);
+    const u = findUser(p.email);
+    if (!u || u.status !== "Invited")
+      throw fail("No outstanding invitation for this email address.");
+    // Reissuing retires the previous token, as in Code.gs.
+    u.inviteToken = newToken();
+    u.inviteExpires = Date.now() + INVITE_TTL_DAYS * 86400000;
+    mail(
+      u.email,
+      PORTAL_NAME + ": You have been invited to the portal",
+      "Accept the invitation: /?invite=" + u.inviteToken,
+    );
+    return { notified: true, message: "Invitation resent to " + u.email + "." };
+  },
+
+  revokeInvite(p) {
+    session(p.accountToken, ["central_admin"]);
+    const u = findUser(p.email);
+    if (!u || u.status !== "Invited")
+      throw fail("No outstanding invitation for this email address.");
+    u.status = "Rejected";
+    u.inviteToken = "";
+    u.inviteExpires = 0;
+    return { message: "Invitation withdrawn." };
+  },
+
+  inviteDetails(p) {
+    const u = findInvite(p.inviteToken);
+    return { email: u.email, name: u.name, role: u.role, region: u.region };
+  },
+
+  acceptInvite(p) {
+    const u = findInvite(p.inviteToken);
+    if (String(p.password || "").length < 12)
+      throw fail("Use a password of at least 12 characters.");
+    u.password = String(p.password);
+    u.status = "Approved";
+    u.inviteToken = "";
+    u.inviteExpires = 0;
+    return {
+      email: u.email,
+      message: "Your account is ready. You can now sign in.",
     };
   },
 
@@ -341,6 +469,14 @@ const actions = {
       u = findUser(p.email);
     if (!u || u.role !== "chedro_user")
       throw fail("Account request not found.");
+    // Mirrors Code.gs: approving an invitation would mark the account Active
+    // with no password, so it would show as usable and refuse every sign-in.
+    if (u.status === "Invited")
+      throw fail(
+        "This account has an outstanding invitation. Resend or revoke it instead.",
+      );
+    if (approve && !u.password)
+      throw fail("This account has no password set, so it cannot be approved.");
     u.status = approve ? "Approved" : "Rejected";
     db.revoked.set(u.email, Date.now());
     const decision = approve ? "Account approved." : "Account rejected.";
