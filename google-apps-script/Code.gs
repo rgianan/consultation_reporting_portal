@@ -62,6 +62,7 @@ function doPost(e) {
     if (a === "registerAccount") return registerAccount_(p);
     if (a === "approveAccount") return approveAccount_(p);
     if (a === "listAccounts") return listAccounts_(p);
+    if (a === "setAccountActive") return setAccountActive_(p);
     if (a === "inviteAccount") return inviteAccount_(p);
     if (a === "resendInvite") return resendInvite_(p);
     if (a === "revokeInvite") return revokeInvite_(p);
@@ -929,8 +930,9 @@ function inviteAccount_(p) {
   lock.waitLock(15000);
   try {
     var existing = findAccount_(email);
-    if (existing && !reclaimable_(existing))
+    if (existing && !invitable_(existing))
       throw new Error("An account already exists for this email address.");
+    var superseded = existing && String(existing.row.Account_Status) === "Pending";
     var row = [
       email,
       "",
@@ -954,7 +956,10 @@ function inviteAccount_(p) {
     role === "central_admin" ? "admin_invited" : "account_invited",
     "",
     admin.email,
-    email + " / " + region,
+    email +
+      " / " +
+      region +
+      (superseded ? " (replaces a pending self-registration)" : ""),
   );
   var notice = sendInvite_(email, name, role, region, token, admin.email);
   // Minting another administrator widens who can mint administrators, so the
@@ -1189,6 +1194,131 @@ function notifyAdminsOfNewAdmin_(email, name, actorEmail) {
     );
   });
 }
+/**
+ * Suspend or restore an approved account without destroying it. This is the
+ * only way to withdraw access from a Central Office administrator:
+ * approveAccount_() deals in registration requests and refuses any row that is
+ * not a chedro_user, which left an administrator unremovable once accepted.
+ *
+ * Deactivation keeps Account_Status at "Approved" and flips the Active column,
+ * so the account, its region and its report history all survive - and it can be
+ * restored without a new invitation.
+ */
+function setAccountActive_(p) {
+  var admin = accountSession_(p.accountToken, ["central_admin"]),
+    email = email_(p.email),
+    active = p.active !== false,
+    reason = field_(p.reason, 500, "Reason");
+  if (!active && !reason)
+    throw new Error("Enter a reason for withdrawing this account's access.");
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var f = findAccount_(email);
+    if (!f) throw new Error("Account not found.");
+    if (String(f.row.Account_Status) === "Invited")
+      throw new Error(
+        "This account has an outstanding invitation. Resend or revoke it instead.",
+      );
+    if (String(f.row.Account_Status) !== "Approved")
+      throw new Error(
+        "Only an account that has been approved can be suspended or restored.",
+      );
+    var already = String(f.row.Active).toLowerCase() !== "false";
+    if (already === active)
+      throw new Error(
+        active
+          ? "This account is already active."
+          : "This account is already suspended.",
+      );
+    // Signing yourself out mid-action reads as the portal breaking, and the
+    // last-administrator check below is meaningless if you can step around it
+    // by suspending yourself first.
+    if (!active && email === email_(admin.email))
+      throw new Error(
+        "You cannot suspend your own account. Ask another administrator.",
+      );
+    // Losing the last administrator locks everyone out of user management,
+    // invitations and report validation, recoverable only by editing the Users
+    // sheet by hand. Refused rather than warned about.
+    if (
+      !active &&
+      String(f.row.Role) === "central_admin" &&
+      activeAdmins_() < 2
+    )
+      throw new Error(
+        "This is the only active Central Office administrator. Invite or " +
+          "restore another administrator before suspending this one.",
+      );
+    f.sheet.getRange(f.index + 1, f.map.Active + 1).setValue(active);
+  } finally {
+    lock.releaseLock();
+  }
+  // Access has to stop now, not whenever the cached session happens to lapse.
+  if (!active) revoke_(email);
+  tryAudit_(
+    active ? "account_reactivated" : "account_suspended",
+    "",
+    admin.email,
+    email + (reason ? " / " + reason : ""),
+  );
+  var notice = notify_(
+    email,
+    PORTAL_NAME + ": " + (active ? "Account restored" : "Account suspended"),
+    active
+      ? emailBody_({
+          heading: "Your portal access has been restored",
+          intro:
+            "Central Office has restored access to your portal account. You can sign in again with your existing password.",
+          details: [
+            ["Name", f.row.Display_Name],
+            ["Regional office", f.row.Region],
+            ["Sign in with", email],
+            ["Restored", stamp_()],
+          ],
+          next: "If you have forgotten your password, use “Forgot password?” on the sign-in screen.",
+        })
+      : emailBody_({
+          heading: "Your portal access has been suspended",
+          intro:
+            "Central Office has withdrawn access to your portal account. Reports your office has already filed are unaffected.",
+          details: [
+            ["Name", f.row.Display_Name],
+            ["Regional office", f.row.Region],
+            ["Account", email],
+            ["Suspended", stamp_()],
+          ],
+          callout: { title: "Reason given", body: reason, tone: "warn" },
+          next: "Contact Central Office if you believe this is a mistake.",
+          cta: false,
+        }),
+    admin.email,
+  );
+  var decision = active ? "Account restored." : "Account suspended.";
+  return out_({
+    ok: true,
+    active: active,
+    notified: notice.sent,
+    message: notice.sent ? decision : decision + " " + notice.warning,
+  });
+}
+/** How many Central Office administrators can currently sign in. */
+function activeAdmins_() {
+  var v = sheet_("Users", usersHeaders_()).getDataRange().getValues(),
+    map = {},
+    n = 0;
+  v[0].forEach(function (x, i) {
+    map[x] = i;
+  });
+  for (var i = 1; i < v.length; i++)
+    if (
+      String(v[i][map.Role]) === "central_admin" &&
+      String(v[i][map.Account_Status]) === "Approved" &&
+      String(v[i][map.Active]).toLowerCase() !== "false"
+    )
+      n++;
+  return n;
+}
 function listAccounts_(p) {
   accountSession_(p.accountToken, ["central_admin"]);
   var sh = sheet_("Users", usersHeaders_()),
@@ -1208,6 +1338,9 @@ function listAccounts_(p) {
       status: String(
         v[i][map.Account_Status] || (v[i][map.Active] ? "Approved" : "Pending"),
       ),
+      // An approved account can still be suspended, which the status alone
+      // does not say.
+      active: String(v[i][map.Active]).toLowerCase() !== "false",
     });
   return out_({ ok: true, rows: rows });
 }
@@ -1260,7 +1393,10 @@ function accountSession_(token, roles) {
   if (!raw) throw authError_("Your session expired. Please sign in again.");
   var u = JSON.parse(raw),
     revoked = c.get("rev_" + hash_(u.email));
-  if (revoked && Number(revoked) > Number(u.issued || 0))
+  // ">=", not ">": a session minted in the same millisecond as the revocation
+  // must lose. Withdrawing access is the kind of control that has to fail
+  // closed, and the cost of the tie going this way is one extra sign-in.
+  if (revoked && Number(revoked) >= Number(u.issued || 0))
     throw authError_(
       "Your access changed and this session has ended. Please sign in again.",
     );
@@ -1290,6 +1426,22 @@ function writeRow_(f, row) {
  */
 function reclaimable_(f) {
   return !!f && String(f.row.Account_Status) === "Rejected";
+}
+/**
+ * What an administrator issuing an invitation may overwrite. Wider than
+ * reclaimable_() by one case: a pending self-registration. Central Office
+ * inviting an address that has already asked for access is a decision about
+ * that same person, and refusing it left the administrator with nothing to do
+ * but reject the request first and then explain the rejection email away.
+ *
+ * Registration deliberately does NOT accept this. Anyone on the domain can
+ * register, so letting a second registration overwrite a pending one would let
+ * a stranger replace someone else's request - and password - with their own.
+ */
+function invitable_(f) {
+  return (
+    reclaimable_(f) || (!!f && String(f.row.Account_Status) === "Pending")
+  );
 }
 function findAccount_(email) {
   var sh = sheet_("Users", usersHeaders_()),
@@ -1337,9 +1489,12 @@ function pwHash_(password, salt) {
 }
 function listRegionalSubmissions_(p) {
   var u = accountSession_(p.accountToken, ["chedro_user"]),
-    v = sheet_("Dialogue Reports", headers_())
-      .getDataRange()
-      .getDisplayValues(),
+    range = sheet_("Dialogue Reports", headers_()).getDataRange(),
+    v = range.getDisplayValues(),
+    // Display values render the date in the spreadsheet's locale, which a date
+    // input cannot consume and which is ambiguous to parse back. The raw cell
+    // is read alongside so a revision can prefill the date it already holds.
+    raw = range.getValues(),
     rows = [];
   for (var i = 1; i < v.length; i++)
     if (v[i][2] === u.region)
@@ -1351,6 +1506,7 @@ function listRegionalSubmissions_(p) {
         region: v[i][2],
         quarter: v[i][3],
         date: v[i][4],
+        dateIso: isoDate_(raw[i][4]),
         participants: Number(v[i][5] || 0),
         initiatives: v[i][6],
         student: v[i][7],
@@ -1631,6 +1787,20 @@ function hash_(s) {
  * portal, so a report is filed under the same year on both sides. Values come
  * back from the sheet as Date objects or as text depending on how Sheets chose
  * to parse them, so both are handled. */
+/**
+ * The consultation date as YYYY-MM-DD, whatever the sheet turned it into.
+ * Submissions are validated as ISO, but Sheets coerces that to a date value and
+ * renders it in the spreadsheet's locale - "3/11/2026" cannot be told apart
+ * from 3 November and 11 March, so the raw cell is converted here instead of
+ * being guessed at in the browser. Anything unrecognised comes back empty and
+ * the form asks for the date again rather than filing a wrong one.
+ */
+function isoDate_(v) {
+  if (v instanceof Date)
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var s = clean_(v);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
+}
 function year_(date, timestamp) {
   if (date instanceof Date) return String(date.getFullYear());
   var m = String(date == null ? "" : date).match(/(?:19|20)\d{2}/);

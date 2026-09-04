@@ -19,6 +19,8 @@ Production portal: <https://ched-consultation-reporting-portal.vercel.app/>
 - Central Office review queue filtered by CHED Regional Office, quarter, reporting year, status or free-text search, with one-click drill-down from the national coverage grid
 - Full Annex A record on every submission: the four agenda discussions, region-specific concerns, other matters, linked attendance sheet and photos, and all four signatories
 - Central Office validation: mark a report Validated or Needs revision with remarks, emailed to the submitting office and shown back in its regional history
+- Revise and resubmit: a report returned for revision reopens the Annex A form with the office's own answers already filled in, and filing the correction supersedes the original so the quarter never shows two live reports
+- Suspend and restore any approved account, including a Central Office administrator, with a reason emailed to the holder; the account, its office and its report history survive, and the live session ends immediately
 - CSV export of every Annex A field for the current filter, not just reference numbers
 - Responsive layouts for desktop, tablet and mobile
 

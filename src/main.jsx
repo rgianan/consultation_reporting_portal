@@ -217,7 +217,10 @@ const STOPWORDS = new Set(
    using via well were whether who whom whose why year years new non not now
    one two three four five six seven eight nine ten all and are but for the
    was has had who its our out its it's raised concern concerns request
-   requests requested issue issues matter matters student students`
+   requests requested issue issues matter matters student students
+   asked asking sought wanted seeking noted reported reports reporting
+   discussed discussion discussions mentioned presented briefed flagged
+   raising remain remains remaining several again still already`
     .split(/\s+/)
     .filter(Boolean),
 );
@@ -303,6 +306,11 @@ const NOT_A_THEME = new Set([
   "chedros",
   "region",
   "regional",
+  // Every concern in the portal is about students at HEIs, so these rank near
+  // the top by definition and tell a reviewer nothing. "heis" is listed
+  // separately because stem() leaves "-is" endings alone.
+  "hei",
+  "heis",
 ]);
 /** Display forms for terms the title-caser would otherwise mangle. */
 const ACRONYMS = {
@@ -417,6 +425,9 @@ function App() {
     [page, setPage] = useState("dashboard"),
     [adminTab, setAdminTab] = useState("summary"),
     [mobile, setMobile] = useState(false),
+    // The returned report a CHEDRO is correcting, carried to the form so the
+    // office edits its previous answers instead of retyping them.
+    [revising, setRevising] = useState(null),
     [signedOut, setSignedOut] = useState(""),
     [notifications, setNotifications] = useState(false);
   // A session can end while the tab is open: it lapses after two hours, or the
@@ -534,7 +545,12 @@ function App() {
               <Nav
                 active={page === "new"}
                 icon={<FilePlus2 />}
-                onClick={() => navigate("new")}
+                onClick={() => {
+                  // Asking for a new report means a blank one, even if a
+                  // revision was started and abandoned.
+                  setRevising(null);
+                  navigate("new");
+                }}
               >
                 New report
               </Nav>
@@ -634,14 +650,39 @@ function App() {
           {currentPage === "dashboard" && (
             <Dashboard
               account={account}
-              go={() => setPage("new")}
+              go={() => {
+                // "Create consultation report" means a blank one, even if a
+                // revision was started and left open.
+                setRevising(null);
+                setPage("new");
+              }}
               viewReports={() => setPage("reports")}
             />
           )}{" "}
           {currentPage === "new" && (
-            <ReportForm account={account} done={() => setPage("reports")} />
+            <ReportForm
+              // The form seeds its state once, on mount. Without a key that
+              // changes with the report being corrected, switching between a
+              // revision and a blank report while already on this page leaves
+              // the previous answers sitting in the fields.
+              key={revising ? revising.id : "blank"}
+              account={account}
+              revising={revising}
+              done={() => {
+                setRevising(null);
+                setPage("reports");
+              }}
+            />
           )}{" "}
-          {currentPage === "reports" && <Reports account={account} />}{" "}
+          {currentPage === "reports" && (
+            <Reports
+              account={account}
+              onRevise={(report) => {
+                setRevising(report);
+                setPage("new");
+              }}
+            />
+          )}{" "}
           {currentPage === "admin" && (
             <Admin account={account} tab={adminTab} setTab={setAdminTab} />
           )}
@@ -1304,24 +1345,37 @@ function SkPanel({ rows = 4, head = true }) {
   );
 }
 
-function ReportForm({ done, account }) {
+function ReportForm({ done, account, revising }) {
   const [step, setStep] = useState(1),
     [msg, setMsg] = useState(""),
     [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({
-    region: account.region,
-    quarter: quarterNow(),
-    date: "",
-    regionConcerns: "",
-    otherMatters: "",
-    presidedBy: "",
-    rapporteur: "",
-    certifiedBy: "",
-    notedBy: "",
-    participants: "",
-    attendanceFile: null,
-    photoFiles: [],
-    notes: { initiatives: "", student: "", academic: "", governance: "" },
+  const [form, setForm] = useState(() => {
+    // Correcting a returned report starts from what the office already wrote:
+    // the Central Office usually objects to one section or the evidence, and
+    // retyping the other five invites fresh mistakes. Attachments are the one
+    // thing that cannot come back - the portal holds Drive links, not the
+    // files - so those are always re-attached.
+    const r = revising || {};
+    return {
+      region: account.region,
+      quarter: r.quarter || quarterNow(),
+      date: r.dateIso || "",
+      regionConcerns: r.regionConcerns || "",
+      otherMatters: r.otherMatters || "",
+      presidedBy: r.presidedBy || "",
+      rapporteur: r.rapporteur || "",
+      certifiedBy: r.certifiedBy || "",
+      notedBy: r.notedBy || "",
+      participants: r.participants ? String(r.participants) : "",
+      attendanceFile: null,
+      photoFiles: [],
+      notes: {
+        initiatives: r.initiatives || "",
+        student: r.student || "",
+        academic: r.academic || "",
+        governance: r.governance || "",
+      },
+    };
   });
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v })),
     note = (k, v) => setForm((f) => ({ ...f, notes: { ...f.notes, [k]: v } }));
@@ -1439,6 +1493,24 @@ function ReportForm({ done, account }) {
   }
   return (
     <form className="form-wrap" onSubmit={submit}>
+      {revising && (
+        <div className="revision-banner">
+          <CircleAlert />
+          <div>
+            <b>Correcting {revising.id}</b>
+            {revising.remarks && (
+              <p>
+                <em>Central Office remarks:</em> {revising.remarks}
+              </p>
+            )}
+            <small>
+              Your previous answers are filled in below — edit what needs to
+              change. The attendance sheet and photos must be attached again,
+              and filing this will replace {revising.id}.
+            </small>
+          </div>
+        </div>
+      )}
       <div className="stepper">
         {["Report details", "Consultation record", "Review & submit"].map(
           (s, i) => (
@@ -1798,7 +1870,7 @@ function downloadCsv(rows, name = "chedro-dialogue-reports.csv") {
   a.click();
   URL.revokeObjectURL(url);
 }
-function Reports({ account }) {
+function Reports({ account, onRevise }) {
   const [rows, setRows] = useState([]),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
@@ -1916,6 +1988,7 @@ function Reports({ account }) {
         ) : (
           <ReportTable
             rows={filtered}
+            onRevise={onRevise}
             emptyText="No reports match these filters."
           />
         )}
@@ -1925,7 +1998,12 @@ function Reports({ account }) {
 }
 /** Shared submissions table. `onReview` is supplied by Central Office screens
  * and turns each expanded row into a validation panel. */
-function ReportTable({ rows, onReview, emptyText = "No reports to show." }) {
+function ReportTable({
+  rows,
+  onReview,
+  onRevise,
+  emptyText = "No reports to show.",
+}) {
   const [open, setOpen] = useState("");
   if (!rows.length) return <p className="empty-state">{emptyText}</p>;
   return (
@@ -1970,7 +2048,11 @@ function ReportTable({ rows, onReview, emptyText = "No reports to show." }) {
               {open === r.id && (
                 <tr className="report-detail">
                   <td colSpan="6">
-                    <ReportDetail report={r} onReview={onReview} />
+                    <ReportDetail
+                      report={r}
+                      onReview={onReview}
+                      onRevise={onRevise}
+                    />
                   </td>
                 </tr>
               )}
@@ -1983,7 +2065,7 @@ function ReportTable({ rows, onReview, emptyText = "No reports to show." }) {
 }
 /** Full Annex A record. Fields the caller did not load are simply omitted, so
  * this renders for both the regional summary list and the Central Office view. */
-function ReportDetail({ report, onReview }) {
+function ReportDetail({ report, onReview, onRevise }) {
   const sections = ANNEX_SECTIONS.filter(([k]) => report[k]),
     signatories = SIGNATORIES.filter(([k]) => report[k]),
     photos = String(report.photoFiles || "")
@@ -2057,6 +2139,22 @@ function ReportDetail({ report, onReview }) {
               <b>{report[k]}</b>
             </div>
           ))}
+        </div>
+      )}
+      {onRevise && report.status === "Needs revision" && (
+        <div className="revise-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={() => onRevise(report)}
+          >
+            <FilePlus2 />
+            Revise and resubmit
+          </button>
+          <small>
+            Opens this report for correction. Filing the corrected version
+            replaces {report.id} and clears the revision request.
+          </small>
         </div>
       )}
       {onReview &&
@@ -3041,7 +3139,10 @@ function CheckRow({ label, value, ok, warn }) {
   );
 }
 /** How a stored account status reads in the table. */
-const statusLabel = (s) => (s === "Approved" ? "Active" : s);
+/** An approved account that has been suspended still reads "Approved" in the
+ * sheet, so the flag has to be folded in for the badge to tell the truth. */
+const statusLabel = (s, active) =>
+  s === "Approved" ? (active === false ? "Suspended" : "Active") : s;
 const roleLabel = (r) =>
   r === "central_admin" ? "Administrator" : "CHEDRO User";
 
@@ -3157,6 +3258,39 @@ function UserAccess({ account }) {
     setMessage(d.message || fallback);
     setMessageWarn(d.notified === false);
   };
+  /** Suspend or restore an approved account. Suspension needs a reason: it is
+   * emailed to the person losing access, who would otherwise just find the
+   * portal refusing them with no explanation. */
+  async function setActive(user, active) {
+    let reason = "";
+    if (!active) {
+      reason = (
+        window.prompt(
+          `Withdraw portal access for ${user.name} (${user.email})?\n\n` +
+            "They will be signed out immediately and told why. Reports their " +
+            "office has already filed are not affected.\n\nReason:",
+          "",
+        ) || ""
+      ).trim();
+      if (!reason) return;
+    }
+    setMessage("");
+    try {
+      const d = await api({
+        action: "setAccountActive",
+        accountToken: account.token,
+        email: user.email,
+        active,
+        reason,
+      });
+      patch(user.email, { active });
+      invalidate("listAccounts");
+      report(d, active ? "Account restored." : "Account suspended.");
+    } catch (e) {
+      setMessage(e.message);
+      setMessageWarn(true);
+    }
+  }
 
   /** The row flips as soon as the button is pressed and rolls back if the write
    * fails, so the queue never shows a decision Central Office did not make. */
@@ -3249,7 +3383,9 @@ function UserAccess({ account }) {
     }
   }
 
-  const active = users.filter((u) => u.status === "Approved"),
+  const active = users.filter(
+      (u) => u.status === "Approved" && u.active !== false,
+    ),
     pending = users.filter((u) => u.status === "Pending"),
     invited = users.filter((u) => u.status === "Invited"),
     offices = new Set(
@@ -3347,10 +3483,11 @@ function UserAccess({ account }) {
                   <td>
                     <span
                       className={
-                        "account-status " + statusLabel(u.status).toLowerCase()
+                        "account-status " + statusLabel(u.status, u.active)
+                          .toLowerCase()
                       }
                     >
-                      {statusLabel(u.status)}
+                      {statusLabel(u.status, u.active)}
                     </span>
                   </td>
                   <td>
@@ -3367,6 +3504,18 @@ function UserAccess({ account }) {
                       <div className="approval-actions">
                         <button onClick={() => resend(u.email)}>Resend</button>
                         <button onClick={() => revoke(u.email)}>Revoke</button>
+                      </div>
+                    ) : u.status === "Approved" ? (
+                      <div className="approval-actions">
+                        {u.active === false ? (
+                          <button onClick={() => setActive(u, true)}>
+                            Restore
+                          </button>
+                        ) : (
+                          <button onClick={() => setActive(u, false)}>
+                            Suspend
+                          </button>
+                        )}
                       </div>
                     ) : (
                       <span className="no-action">—</span>

@@ -107,6 +107,64 @@ const requireDomain = (e) => {
     throw fail("Please use your @" + DOMAIN + " email address.");
 };
 
+/**
+ * Narrative for each seeded report. Deliberately varied: earlier seed data
+ * repeated one paragraph verbatim for every office, so every extracted term
+ * tied at the same office and concern count, the Themes tab fell back to its
+ * alphabetical tiebreak, and the feature looked broken in every demo. These
+ * share some concerns (stipend delays, OJT placements, connectivity) and differ
+ * on others, which is what the analysis is there to tell apart.
+ */
+const NARRATIVES = [
+  {
+    initiatives:
+      "Briefed HEIs on the free higher education subsidy; several asked for clearer guidance on the revised CMO for student affairs.",
+    student:
+      "TES stipend releases delayed by one semester; students report unpaid boarding fees.\nRequest for more guidance counsellors in the larger SUCs.",
+    academic:
+      "OJT placement slots for IT students have shrunk after two partner firms withdrew.",
+    governance:
+      "Students asked for a seat on the HEI governing board and a say in tuition consultations.",
+    regionConcerns:
+      "Transport fare increases are pushing commuting students to drop afternoon subjects.",
+  },
+  {
+    initiatives:
+      "Discussed the rollout of the student financial assistance portal; HEIs asked for training before the next enrolment.",
+    student:
+      "Scholarship stipends delayed again this term; students in remote municipalities travel far to claim them.",
+    academic:
+      "Shortage of OJT partners for engineering students; some are placed outside their field.",
+    governance:
+      "No student representation in tuition consultations at three private HEIs.",
+    regionConcerns:
+      "Poor internet connectivity makes online coursework impossible in upland barangays.",
+  },
+  {
+    initiatives:
+      "Presented the updated scholarship guidelines; questions focused on documentary requirements.",
+    student:
+      "Mental health services are unavailable in most member HEIs; students asked for referral pathways.\nDelayed release of TES stipends raised again.",
+    academic:
+      "Requests to align the curriculum with local industry needs, particularly agriculture and tourism.",
+    governance:
+      "Concerns about how tuition fee increases are consulted on and published.",
+    regionConcerns:
+      "Ferry cancellations during habagat season prevent island students from attending classes.",
+  },
+  {
+    initiatives:
+      "Walked through the revised CMO on student organisations and the accreditation timeline.",
+    student:
+      "Dormitory shortages near campuses; students report unsafe informal boarding arrangements.",
+    academic:
+      "OJT placements remain scarce for tourism students after two partner hotels closed.",
+    governance:
+      "Student councils asked for clearer rules on the use of student activity funds.",
+    regionConcerns:
+      "Connectivity costs remain the largest barrier for students in the interior municipalities.",
+  },
+];
 function seed() {
   const year = String(new Date().getFullYear());
   const report = (n, region, quarter, status, remarks) => ({
@@ -116,16 +174,7 @@ function seed() {
     quarter,
     date: year + "-03-0" + n,
     participants: 40 + n * 13,
-    initiatives:
-      "Briefed HEIs on the free higher education subsidy and the revised CMO on student affairs.",
-    student:
-      "Delayed release of student financial assistance; request for additional guidance counsellors.",
-    academic:
-      "Concerns on limited OJT placement slots and the shift to outcomes-based curricula.",
-    governance:
-      "Students sought representation in HEI governing boards and clearer tuition consultation rules.",
-    regionConcerns:
-      "Transport and connectivity costs for students across " + region + ".",
+    ...NARRATIVES[(n - 1) % NARRATIVES.length],
     otherMatters: "None",
     attendanceFile: MOCK_PATH + "/file/attendance-" + n,
     photoFiles:
@@ -207,6 +256,9 @@ const findUser = (e) => db.users.find((u) => u.email === asEmail(e));
 /** Mirrors reclaimable_(): a rejected row still holds its email address, so
  * it is rewritten rather than blocking that address forever. */
 const reclaimable = (u) => !!u && u.status === "Rejected";
+/** Mirrors invitable_(): an invitation may also supersede a pending
+ * self-registration, which plain registration may not. */
+const invitable = (u) => reclaimable(u) || (!!u && u.status === "Pending");
 /** Mirrors findInvite_(): matched on the token, never on a supplied email. */
 function findInvite(token) {
   const t = String(token || "");
@@ -227,7 +279,9 @@ function session(t, roles) {
   // Same revocation stamp as Code.gs: rejecting an account or resetting its
   // password ends any session already open on it.
   const revoked = db.revoked.get(s.email);
-  if (revoked && revoked > (s.issued || 0))
+  // ">=" so a session minted in the same millisecond as the revocation loses,
+  // matching accountSession_() in Code.gs.
+  if (revoked && revoked >= (s.issued || 0))
     throw failSession(
       "Your access changed and this session has ended. Please sign in again.",
     );
@@ -259,6 +313,9 @@ const publicReport = (r) => ({
   region: r.region,
   quarter: r.quarter,
   date: r.date,
+  // The mock already stores ISO, but the field is emitted so the revision
+  // form has the same shape it gets from Code.gs.
+  dateIso: /^\d{4}-\d{2}-\d{2}$/.test(String(r.date)) ? r.date : "",
   participants: r.participants,
   initiatives: r.initiatives,
   student: r.student,
@@ -287,13 +344,18 @@ const actions = {
         "Too many sign-in attempts for this account. Please wait a few " +
           "minutes and try again, or reset your password.",
       );
+    if (u && u.status === "Invited")
+      throw fail(
+        "Your account has not been set up yet. Open the invitation email from Central Office to choose a password.",
+      );
     if (u && u.status === "Pending")
       throw fail("Your account is awaiting Central Office approval.");
     if (u && u.status === "Rejected")
       throw fail(
         "Your account request was not approved. Contact Central Office for assistance.",
       );
-    if (!u || u.password !== password) {
+    // A suspended account is refused like a bad credential, matching Code.gs.
+    if (!u || u.active === false || u.password !== password) {
       db.loginFailures.set(email, (db.loginFailures.get(email) || 0) + 1);
       throw fail("Invalid credentials or inactive account.");
     }
@@ -360,7 +422,7 @@ const actions = {
       throw fail("Select the CHED Regional Office for this account.");
     requireDomain(email);
     const existing = findUser(email);
-    if (existing && !reclaimable(existing))
+    if (existing && !invitable(existing))
       throw fail("An account already exists for this email address.");
     const token = newToken();
     const fresh = {
@@ -459,7 +521,68 @@ const actions = {
         region: u.region,
         role: u.role,
         status: u.status,
+        active: u.active !== false,
       })),
+    };
+  },
+
+  /** Mirrors setAccountActive_(): suspend or restore an approved account,
+   * including a Central Office administrator, with the same last-admin and
+   * self-suspension guards. */
+  setAccountActive(p) {
+    const admin = session(p.accountToken, ["central_admin"]),
+      email = asEmail(p.email),
+      active = p.active !== false,
+      reason = field(p.reason, 500, "Reason"),
+      u = findUser(email);
+    if (!active && !reason)
+      throw fail("Enter a reason for withdrawing this account's access.");
+    if (!u) throw fail("Account not found.");
+    if (u.status === "Invited")
+      throw fail(
+        "This account has an outstanding invitation. Resend or revoke it instead.",
+      );
+    if (u.status !== "Approved")
+      throw fail(
+        "Only an account that has been approved can be suspended or restored.",
+      );
+    if ((u.active !== false) === active)
+      throw fail(
+        active
+          ? "This account is already active."
+          : "This account is already suspended.",
+      );
+    if (!active && email === asEmail(admin.email))
+      throw fail("You cannot suspend your own account. Ask another administrator.");
+    const admins = db.users.filter(
+      (x) =>
+        x.role === "central_admin" &&
+        x.status === "Approved" &&
+        x.active !== false,
+    ).length;
+    if (!active && u.role === "central_admin" && admins < 2)
+      throw fail(
+        "This is the only active Central Office administrator. Invite or " +
+          "restore another administrator before suspending this one.",
+      );
+    u.active = active;
+    if (!active) db.revoked.set(email, Date.now());
+    const notice = mail(
+      email,
+      PORTAL_NAME + ": " + (active ? "Account restored" : "Account suspended"),
+      active
+        ? "Your portal access has been restored.\n      Sign in with: " + email
+        : [
+            "Your portal access has been suspended.",
+            "  Account: " + email,
+            "  Reason: " + reason,
+          ].join("\n    "),
+    );
+    const decision = active ? "Account restored." : "Account suspended.";
+    return {
+      active,
+      notified: notice.sent,
+      message: notice.sent ? decision : decision + " " + notice.warning,
     };
   },
 
