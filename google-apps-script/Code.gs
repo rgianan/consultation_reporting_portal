@@ -21,6 +21,13 @@ var OTP_TTL = 600,
   // by a corrected one. Superseded rows stay on the sheet for the audit trail
   // but are out of every count and every live view.
   SUPERSEDED = "Superseded",
+  // Statuses an office may still replace its own report from. Validated is
+  // deliberately absent: once Central Office has accepted a report it is the
+  // office's record for that quarter, and changing it goes back through them.
+  REPLACEABLE = ["For review", "Needs revision"],
+  // Central Office hears at most once per office per this many seconds that a
+  // report awaiting review was replaced.
+  EDIT_NOTICE_COOLDOWN = 600,
   // The one-live-report-per-quarter rule keys on this value, so it has to come
   // from a fixed set. Left as free text, "Q3" and "3rd quarter" would each open
   // their own bucket and a second report would slip past the duplicate check.
@@ -256,7 +263,8 @@ function submitDialogue_(p) {
       certifiedBy: field_(p.certifiedBy, 300, "Certified correct by"),
       notedBy: field_(p.notedBy, 300, "Noted by"),
     };
-  var lock = LockService.getScriptLock();
+  var result,
+    lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
     var sh = sheet_("Dialogue Reports", headers_()),
@@ -265,11 +273,16 @@ function submitDialogue_(p) {
       rIdx = h.indexOf("Admin_Remarks"),
       v = sh.getDataRange().getValues(),
       supersede = 0;
-    // One live report per office per quarter. A report the Central Office has
-    // returned is the one case where a replacement is expected, so that row is
-    // superseded by the new one instead of sitting alongside it - otherwise the
-    // office stays flagged for revision forever and every count reads double.
-    // Anything else has to be returned for revision before it can be replaced.
+    // One live report per office per quarter. An office may replace its own
+    // report while it is still "For review" or has been returned for revision;
+    // the old row is superseded by the new one rather than sitting alongside
+    // it, so the quarter never shows two live reports and no count doubles.
+    //
+    // A validated report is the exception: Central Office has accepted it and
+    // it is now the office's record for that quarter, so replacing it has to go
+    // back through Central Office. reviewSubmission_() already refuses to act
+    // on a superseded row, so a reviewer who is mid-review when a replacement
+    // lands is told that rather than deciding a version nobody is working from.
     for (var i = 1; i < v.length; i++) {
       if (
         String(v[i][2]) !== user.region ||
@@ -279,20 +292,24 @@ function submitDialogue_(p) {
         continue;
       var prior = String(v[i][sIdx] || "For review");
       if (prior === SUPERSEDED) continue;
-      if (prior !== "Needs revision")
+      if (REPLACEABLE.indexOf(prior) < 0)
+        // Naming the status rather than assuming it is "Validated": that is the
+        // only value this can be today, but asserting it would put a false
+        // reason in front of the user the moment a status is added or a cell is
+        // edited by hand.
         throw new Error(
-          "A " +
+          "The " +
             quarter +
             " " +
             year +
-            " report (" +
-            v[i][1] +
-            ") is already on file for " +
+            " report for " +
             user.region +
-            " and is marked “" +
+            " (" +
+            v[i][1] +
+            ") is marked “" +
             prior +
-            "”. Ask Central Office to return it for revision before " +
-            "filing a replacement.",
+            "” and can no longer be replaced by your office. Ask Central " +
+            "Office to return it for revision first.",
         );
       supersede = i;
     }
@@ -334,9 +351,14 @@ function submitDialogue_(p) {
     sh.appendRow(row);
     // Only after the replacement is safely on the sheet, so a failure above
     // never leaves the office with no live report for the quarter.
-    var replaced = "";
+    var replaced = "",
+      // What the replaced report was before this one landed. A returned report
+      // being corrected is the reply Central Office asked for; one replaced
+      // while still "For review" is a change they have not been told about.
+      priorStatus = "";
     if (supersede) {
       replaced = String(v[supersede][1]);
+      priorStatus = String(v[supersede][sIdx] || "For review");
       sh.getRange(supersede + 1, sIdx + 1).setValue(SUPERSEDED);
       sh.getRange(supersede + 1, rIdx + 1).setValue(
         text_(
@@ -356,19 +378,83 @@ function submitDialogue_(p) {
       user.email,
       p.region + (replaced ? " (replaces " + replaced + ")" : ""),
     );
-    var warning = [files.warning, auditWarning].filter(String).join(" ");
-    return out_({
-      ok: true,
-      submissionId: id,
+    result = {
+      id: id,
       replaced: replaced,
-      warning: warning,
-      message:
-        "Consultation report submitted." +
-        (replaced ? " It replaces " + replaced + "." : "") +
-        (warning ? " " + warning : ""),
-    });
+      priorStatus: priorStatus,
+      warning: [files.warning, auditWarning].filter(String).join(" "),
+    };
   } finally {
     lock.releaseLock();
+  }
+  // Outside the lock: sending mail can take seconds, and every other office
+  // trying to file a report would be queued behind it.
+  if (result.replaced && result.priorStatus === "For review")
+    notifyReviewersOfReplacement_(result.id, result.replaced, user, p);
+  return out_({
+    ok: true,
+    submissionId: result.id,
+    replaced: result.replaced,
+    warning: result.warning,
+    message:
+      "Consultation report submitted." +
+      (result.replaced ? " It replaces " + result.replaced + "." : "") +
+      (result.warning ? " " + result.warning : ""),
+  });
+}
+/**
+ * Tell Central Office that an office has replaced a report that was still
+ * awaiting review. Without this a reviewer can be part-way through a report
+ * that has quietly been superseded, and only finds out when their decision is
+ * refused. A report returned for revision is deliberately not announced: that
+ * replacement is the answer Central Office asked for.
+ *
+ * Never throws - the report is already filed, and a mail problem must not turn
+ * a completed submission into an error the office would retry.
+ */
+function notifyReviewersOfReplacement_(id, replaced, user, p) {
+  try {
+    // One notice per office per window. An officer correcting two typos in a
+    // row should not send Central Office two emails, and the queue always shows
+    // the current version anyway.
+    var c = CacheService.getScriptCache(),
+      key = "edit_" + hash_(user.region);
+    if (c.get(key)) {
+      tryAudit_("edit_notice_skipped", id, user.email, "replaces " + replaced);
+      return;
+    }
+    var to = adminEmails_();
+    // The cooldown is only spent once there is actually someone to tell.
+    // Taking it earlier meant an edit made while every administrator was
+    // suspended silenced the next ten minutes of genuine notices.
+    if (!to.length) return;
+    c.put(key, "1", EDIT_NOTICE_COOLDOWN);
+    var body = emailBody_({
+      heading: "A report awaiting review has been replaced",
+      intro:
+        user.region +
+        " has filed a corrected version of a report that was still awaiting review. The earlier version is now superseded and can no longer be validated or returned.",
+      details: [
+        ["Regional office", user.region],
+        ["New reference", id],
+        ["Replaces", replaced],
+        ["Quarter", text_(p.quarter, 30)],
+        ["Consultation date", text_(p.date, 30)],
+        ["Replaced by", user.name + " (" + user.email + ")"],
+        ["When", stamp_()],
+      ],
+      next: "Open the portal to review the current version.",
+    });
+    to.forEach(function (address) {
+      notify_(address, PORTAL_NAME + ": Report replaced before review (" + id + ")", body, user.email);
+    });
+  } catch (err) {
+    tryAudit_(
+      "edit_notice_failed",
+      id,
+      user.email,
+      err && err.message ? err.message : String(err),
+    );
   }
 }
 function saveReportFiles_(id, user, attendance, photos) {
@@ -1162,7 +1248,10 @@ function adminEmails_() {
   for (var i = 1; i < v.length; i++)
     if (
       String(v[i][map.Role]) === "central_admin" &&
-      String(v[i][map.Account_Status]) === "Approved"
+      String(v[i][map.Account_Status]) === "Approved" &&
+      // A suspended administrator has had access withdrawn, so they should not
+      // keep receiving the portal's administrative mail either.
+      String(v[i][map.Active]).toLowerCase() !== "false"
     ) {
       var e = email_(v[i][map.Email]);
       if (e) out.push(e);
@@ -1304,20 +1393,9 @@ function setAccountActive_(p) {
 }
 /** How many Central Office administrators can currently sign in. */
 function activeAdmins_() {
-  var v = sheet_("Users", usersHeaders_()).getDataRange().getValues(),
-    map = {},
-    n = 0;
-  v[0].forEach(function (x, i) {
-    map[x] = i;
-  });
-  for (var i = 1; i < v.length; i++)
-    if (
-      String(v[i][map.Role]) === "central_admin" &&
-      String(v[i][map.Account_Status]) === "Approved" &&
-      String(v[i][map.Active]).toLowerCase() !== "false"
-    )
-      n++;
-  return n;
+  // Same definition as the mail list, so the last-administrator guard and the
+  // notification recipients can never disagree about who counts.
+  return adminEmails_().length;
 }
 function listAccounts_(p) {
   accountSession_(p.accountToken, ["central_admin"]);
@@ -1521,7 +1599,10 @@ function listRegionalSubmissions_(p) {
         certifiedBy: v[i][16],
         notedBy: v[i][17],
         submittedBy: v[i][19],
-        status: v[i][21],
+        // Defaulted the same way submitDialogue_ reads it, so the portal
+        // never sees a blank status it would treat as unreplaceable while
+        // the badge beside it reads "For review".
+        status: v[i][21] || "For review",
         remarks: v[i][22],
       });
   return out_({ ok: true, region: u.region, rows: rows });
@@ -1556,7 +1637,7 @@ function adminDashboard_(p) {
       notedBy: v[i][17],
       email: v[i][18],
       submittedBy: v[i][19],
-      status: v[i][21],
+      status: v[i][21] || "For review",
       remarks: v[i][22],
     });
   var byRegion = {},

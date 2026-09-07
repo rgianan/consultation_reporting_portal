@@ -145,6 +145,10 @@ const SIGNATORY_LIMIT = 300;
 const REMARKS_LIMIT = 2000;
 const SUPERSEDED = "Superseded";
 const FILTER_STATUSES = STATUSES.concat(SUPERSEDED);
+// Mirrors REPLACEABLE in Code.gs: the statuses an office may still replace its
+// own report from. Validated is absent by design — once Central Office has
+// accepted a report, changing it goes back through them.
+const REPLACEABLE = ["For review", "Needs revision"];
 const isLive = (r) => r.status !== SUPERSEDED;
 const quarterNow = () => QUARTERS[Math.floor(new Date().getMonth() / 3)];
 const yearNow = () => String(new Date().getFullYear());
@@ -1494,19 +1498,31 @@ function ReportForm({ done, account, revising }) {
   return (
     <form className="form-wrap" onSubmit={submit}>
       {revising && (
-        <div className="revision-banner">
+        <div
+          className={
+            revising.status === "Needs revision"
+              ? "revision-banner"
+              : "revision-banner editing"
+          }
+        >
           <CircleAlert />
           <div>
-            <b>Correcting {revising.id}</b>
+            <b>
+              {revising.status === "Needs revision"
+                ? `Correcting ${revising.id}`
+                : `Editing ${revising.id}`}
+            </b>
             {revising.remarks && (
               <p>
                 <em>Central Office remarks:</em> {revising.remarks}
               </p>
             )}
             <small>
-              Your previous answers are filled in below — edit what needs to
-              change. The attendance sheet and photos must be attached again,
-              and filing this will replace {revising.id}.
+              {revising.status === "Needs revision"
+                ? "Your previous answers are filled in below — edit what needs to change."
+                : "This report is still awaiting review, so your office can still change it. Your previous answers are filled in below."}{" "}
+              The attendance sheet and photos must be attached again, and filing
+              this will replace {revising.id}.
             </small>
           </div>
         </div>
@@ -2141,7 +2157,7 @@ function ReportDetail({ report, onReview, onRevise }) {
           ))}
         </div>
       )}
-      {onRevise && report.status === "Needs revision" && (
+      {onRevise && REPLACEABLE.includes(report.status) && (
         <div className="revise-actions">
           <button
             type="button"
@@ -2149,11 +2165,14 @@ function ReportDetail({ report, onReview, onRevise }) {
             onClick={() => onRevise(report)}
           >
             <FilePlus2 />
-            Revise and resubmit
+            {report.status === "Needs revision"
+              ? "Revise and resubmit"
+              : "Edit and resubmit"}
           </button>
           <small>
-            Opens this report for correction. Filing the corrected version
-            replaces {report.id} and clears the revision request.
+            {report.status === "Needs revision"
+              ? `Opens this report for correction. Filing the corrected version replaces ${report.id} and clears the revision request.`
+              : `Opens this report for editing while it is still awaiting review. Filing the updated version replaces ${report.id}.`}
           </small>
         </div>
       )}
@@ -3483,8 +3502,8 @@ function UserAccess({ account }) {
                   <td>
                     <span
                       className={
-                        "account-status " + statusLabel(u.status, u.active)
-                          .toLowerCase()
+                        "account-status " +
+                        statusLabel(u.status, u.active).toLowerCase()
                       }
                     >
                       {statusLabel(u.status, u.active)}

@@ -34,6 +34,8 @@ const REGIONS = [
 ];
 const STATUSES = ["For review", "Validated", "Needs revision"];
 const SUPERSEDED = "Superseded";
+/** Mirrors REPLACEABLE in Code.gs: what an office may still replace. */
+const REPLACEABLE = ["For review", "Needs revision"];
 // Mirrors the allowlist and bound enforced in Code.gs.
 const QUARTERS = ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"];
 const MAX_PARTICIPANTS = 1000000;
@@ -242,6 +244,9 @@ function seed() {
     loginFailures: new Map(),
     // email -> revocation timestamp, mirroring revoke_() in Code.gs.
     revoked: new Map(),
+    // Regions already told about a pre-review replacement. Code.gs expires
+    // these after ten minutes; the mock holds them until the server restarts.
+    editNotified: new Set(),
     otpMailCount: 0,
     counter: 5,
   };
@@ -330,7 +335,8 @@ const publicReport = (r) => ({
   certifiedBy: r.certifiedBy,
   notedBy: r.notedBy,
   submittedBy: r.submittedBy,
-  status: r.status,
+  // Defaulted as in Code.gs, so the portal never sees a blank status.
+  status: r.status || "For review",
   remarks: r.remarks,
 });
 
@@ -553,7 +559,9 @@ const actions = {
           : "This account is already suspended.",
       );
     if (!active && email === asEmail(admin.email))
-      throw fail("You cannot suspend your own account. Ask another administrator.");
+      throw fail(
+        "You cannot suspend your own account. Ask another administrator.",
+      );
     const admins = db.users.filter(
       (x) =>
         x.role === "central_admin" &&
@@ -667,8 +675,10 @@ const actions = {
     if (date > new Date().toISOString().slice(0, 10))
       throw fail("The consultation date cannot be in the future.");
     const year = date.slice(0, 4);
-    // One live report per office per quarter, as in Code.gs: a returned report
-    // is superseded by its replacement, anything else has to be returned first.
+    // One live report per office per quarter, as in Code.gs: an office may
+    // replace its own report while it is For review or returned for revision,
+    // and the old row is superseded. A validated report is Central Office's
+    // record and has to be returned before it can be replaced.
     const clash = db.reports.find(
       (r) =>
         r.region === u.region &&
@@ -676,20 +686,22 @@ const actions = {
         yearOfRow(r) === year &&
         r.status !== SUPERSEDED,
     );
-    if (clash && clash.status !== "Needs revision")
+    if (clash && REPLACEABLE.indexOf(clash.status) < 0)
+      // Names the status it found rather than assuming "Validated", as in
+      // Code.gs -- the wording is part of the contract this mock mirrors.
       throw fail(
-        "A " +
+        "The " +
           quarter +
           " " +
           year +
-          " report (" +
-          clash.id +
-          ") is already on file for " +
+          " report for " +
           u.region +
-          " and is marked “" +
+          " (" +
+          clash.id +
+          ") is marked “" +
           clash.status +
-          "”. Ask Central Office to return it for revision before " +
-          "filing a replacement.",
+          "” and can no longer be replaced by your office. Ask Central " +
+          "Office to return it for revision first.",
       );
     if (!p.attendanceFile) throw fail("Attendance sheet is required.");
     const photos = Array.isArray(p.photoFiles) ? p.photoFiles : [];
@@ -742,6 +754,8 @@ const actions = {
       remarks: "",
     });
     let replaced = "";
+    // What the replaced report was before this one landed, mirroring Code.gs.
+    const priorStatus = clash ? clash.status : "";
     if (clash) {
       replaced = clash.id;
       clash.status = SUPERSEDED;
@@ -753,6 +767,39 @@ const actions = {
         new Date().toISOString().slice(0, 10) +
         "]"
       ).slice(0, 2000);
+    }
+    // A report replaced while still awaiting review is a change Central Office
+    // has not been told about; one replaced after being returned is the reply
+    // they asked for, so only the first is announced.
+    if (replaced && priorStatus === "For review") {
+      if (db.editNotified.has(u.region)) {
+        console.log(
+          "\n  [mock email] suppressed: " +
+            u.region +
+            " already notified within the cooldown\n",
+        );
+      } else {
+        db.editNotified.add(u.region);
+        db.users
+          .filter(
+            (a) =>
+              a.role === "central_admin" &&
+              a.status === "Approved" &&
+              a.active !== false,
+          )
+          .forEach((a) =>
+            mail(
+              a.email,
+              PORTAL_NAME + ": Report replaced before review (" + id + ")",
+              u.region +
+                " replaced " +
+                replaced +
+                " with " +
+                id +
+                " while it was still awaiting review.",
+            ),
+          );
+      }
     }
     return {
       submissionId: id,

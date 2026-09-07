@@ -2370,6 +2370,22 @@ tbody tr {
   color: #8a5b52;
   line-height: 1.6;
 }
+/* Editing a report that is merely awaiting review is routine housekeeping, not
+   a correction Central Office has demanded, so it drops the warning red. */
+.revision-banner.editing {
+  background: #f1f6fc;
+  border-color: #cfdcec;
+}
+.revision-banner.editing > svg {
+  color: #2e609d;
+}
+.revision-banner.editing b,
+.revision-banner.editing p {
+  color: #22406b;
+}
+.revision-banner.editing small {
+  color: #55688a;
+}
 .revise-actions {
   border-top: 1px solid #e3e8ef;
   padding-top: 13px;

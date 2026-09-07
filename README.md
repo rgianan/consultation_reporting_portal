@@ -19,7 +19,7 @@ Production portal: <https://ched-consultation-reporting-portal.vercel.app/>
 - Central Office review queue filtered by CHED Regional Office, quarter, reporting year, status or free-text search, with one-click drill-down from the national coverage grid
 - Full Annex A record on every submission: the four agenda discussions, region-specific concerns, other matters, linked attendance sheet and photos, and all four signatories
 - Central Office validation: mark a report Validated or Needs revision with remarks, emailed to the submitting office and shown back in its regional history
-- Revise and resubmit: a report returned for revision reopens the Annex A form with the office's own answers already filled in, and filing the correction supersedes the original so the quarter never shows two live reports
+- Edit and resubmit: an office can reopen its own report while it is still **For review** or has been returned for revision, with its previous answers already filled in; filing the update supersedes the original so the quarter never shows two live reports. A **Validated** report can only be changed after Central Office returns it
 - Suspend and restore any approved account, including a Central Office administrator, with a reason emailed to the holder; the account, its office and its report history survive, and the live session ends immediately
 - CSV export of every Annex A field for the current filter, not just reference numbers
 - Responsive layouts for desktop, tablet and mobile
@@ -172,16 +172,33 @@ re-run.
 ### One live report per office per quarter
 
 The backend allows a single live report per regional office, quarter and
-reporting year. Filing a second one is refused while the first is `For review`
-or `Validated` — Central Office has to return it for revision first, which is
-what the **Return for revision** button is for.
+reporting year. An office may replace its own report while it is `For review`
+or `Needs revision`, from **Edit and resubmit** / **Revise and resubmit** on the
+report itself. A `Validated` report cannot be replaced by the office: Central
+Office has accepted it and it is now the record for that quarter, so changing it
+means asking Central Office to **Return for revision** first.
 
-Once a report is returned, the office's next submission for that quarter
-replaces it: the old row is marked `Superseded`, keeps its remarks, gains a
-`[Replaced by …]` note, and drops out of every count, the coverage grid, the
-compliance checks and the quarterly timeline. It stays on the sheet for the
-audit trail and is still readable in the portal by choosing **Superseded** in
-the status filter, but it can no longer be validated or returned.
+Replacing supersedes rather than overwrites: the old row is marked `Superseded`,
+keeps its remarks, gains a `[Replaced by …]` note, and drops out of every count,
+the coverage grid, the compliance checks and the quarterly timeline. It stays on
+the sheet for the audit trail and is still readable in the portal by choosing
+**Superseded** in the status filter, but it can no longer be validated or
+returned — so a reviewer who was mid-review when a replacement landed is told
+that, rather than deciding a version nobody is working from.
+
+Attachments are the one thing a replacement cannot inherit: the portal stores
+Drive links, not the files, so the attendance sheet and photos are attached
+again each time.
+
+**Replacing a report that was still `For review` emails every active Central
+Office administrator**, because a reviewer can otherwise be part-way through a
+report that has quietly been superseded and only find out when their decision is
+refused. Replacing a `Needs revision` report sends nothing — that replacement is
+the reply Central Office asked for. To keep an officer fixing two typos in a row
+from sending two emails, each office triggers at most one such notice every ten
+minutes (`EDIT_NOTICE_COOLDOWN`); a suppressed notice is recorded in the Audit
+Log as `edit_notice_skipped`, and the review queue always shows the current
+version regardless.
 
 Consultation dates are stored as `YYYY-MM-DD` and cannot be in the future,
 since the reporting year is read back off that column.
