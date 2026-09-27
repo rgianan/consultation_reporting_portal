@@ -1,4 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap");
 :root {
   font-family: "DM Sans", sans-serif;
   color: #172036;
@@ -2409,4 +2408,458 @@ tbody tr {
 .account-status.suspended {
   background: #fdece9;
   color: #8d3226;
+}
+/* Explanatory note under a field, e.g. why the quarter is locked while an
+   office is replacing a report. */
+.field-hint {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #7d8795;
+}
+.field select:disabled {
+  background: #f4f6f9;
+  color: #55607a;
+  cursor: not-allowed;
+}
+
+/* ---- Revised structure: navigation badges and the bell ---- */
+.nav-badge {
+  margin-left: auto;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #d4a62d;
+  color: #15243b;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon .bell-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #a13939;
+  color: #fff;
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.notification-pop p {
+  font-size: 12px;
+}
+.attention-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.attention-list button {
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: #f4f6f9;
+  color: #172036;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.attention-list button:hover {
+  background: #eaf2fb;
+}
+.attention-list span {
+  flex-grow: 1;
+}
+.attention-list svg {
+  width: 15px;
+  color: #2e609d;
+}
+
+/* ---- CHEDRO Home: this quarter's report ---- */
+.quarter-card {
+  background: #fff;
+  border: 1px solid #dfe4eb;
+  border-radius: 16px;
+  padding: 30px 34px;
+  display: flex;
+  gap: 36px;
+}
+.qc-main {
+  flex-grow: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.qc-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #5b6675;
+}
+.qc-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.qc-title h2 {
+  margin: 0;
+  font: 800 26px Manrope, sans-serif;
+  color: #102b54;
+}
+.qc-main > p {
+  margin: 0;
+  max-width: 640px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #3e4a5d;
+}
+.state-badge {
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.state-badge.not-filed {
+  background: #eceef2;
+  color: #3e4a5d;
+}
+.state-badge.for-review {
+  background: #fff1d4;
+  color: #8a5a0e;
+}
+.state-badge.needs-revision {
+  background: #fde8e8;
+  color: #a13939;
+}
+.state-badge.validated {
+  background: #e4f5ea;
+  color: #267047;
+}
+.qc-remarks {
+  max-width: 640px;
+  padding: 13px 15px;
+  border-radius: 10px;
+  background: #fdf3f1;
+  border: 1px solid #f3cfca;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #5a2b22;
+}
+.qc-remarks b {
+  font-size: 12px;
+  color: #8d3226;
+}
+.qc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 2px;
+}
+.qc-actions .primary,
+.qc-actions .secondary {
+  min-height: 44px;
+  font-size: 13px;
+  padding: 0 20px;
+}
+.qc-actions .primary svg {
+  width: 16px;
+}
+.qc-meta {
+  width: 280px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: #f7f9fc;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.qc-meta div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.qc-meta dt {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #5b6675;
+}
+.qc-meta dd {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.qc-meta p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #3e4a5d;
+}
+
+/* ---- CHEDRO Home: the reporting year ---- */
+.year-strip {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ys-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.ys-head h2 {
+  margin: 0;
+  font: 800 17px Manrope, sans-serif;
+  color: #102b54;
+}
+.ys-head span {
+  font-size: 12.5px;
+  color: #5b6675;
+}
+.ys-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.q-tile {
+  min-height: 132px;
+  box-sizing: border-box;
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #dfe4eb;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.q-tile.current {
+  border: 2px solid #102b54;
+  padding: 15px 17px;
+}
+.q-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.q-top b {
+  flex-grow: 1;
+  font: 800 14px Manrope, sans-serif;
+  color: #102b54;
+}
+.q-tile small {
+  font-size: 12px;
+  color: #5b6675;
+  overflow-wrap: anywhere;
+}
+.text-link {
+  margin-top: auto;
+  align-self: flex-start;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #245d9c;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.text-link:hover {
+  color: #163c70;
+}
+.history-banner .secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.history-banner .secondary svg {
+  width: 14px;
+}
+
+/* ---- Central Office: the review queue ---- */
+.queue-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 18px;
+}
+.queue-chips .chip {
+  padding: 7px 13px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.chip.for-review {
+  background: #fff1d4;
+  color: #7d520c;
+}
+.chip.replaced {
+  background: #e3edf9;
+  color: #1f4f8a;
+}
+.chip.needs-revision {
+  background: #fde8e8;
+  color: #a13939;
+}
+.chip.validated {
+  background: #e4f5ea;
+  color: #267047;
+}
+.chip.not-filed {
+  background: #eceef2;
+  color: #3e4a5d;
+}
+.row-note {
+  display: block;
+  width: fit-content;
+  margin-top: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eceef2;
+  color: #3e4a5d;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.row-note.replaced {
+  background: #e3edf9;
+  color: #1f4f8a;
+}
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin: 18px 0;
+}
+.returned-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 22px 14px;
+}
+.returned-list li {
+  padding: 12px 0;
+  border-top: 1px solid #eef1f5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.returned-list li:first-child {
+  border-top: 0;
+}
+.returned-list li > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.returned-list b {
+  font-size: 13px;
+}
+.returned-list small {
+  font-size: 11.5px;
+  color: #5b6675;
+}
+.returned-list q {
+  font-size: 12.5px;
+  color: #3e4a5d;
+  line-height: 1.5;
+}
+.unfiled {
+  padding: 14px 22px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.unfiled > small {
+  font-size: 12px;
+  color: #5b6675;
+}
+.region-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.region-chips span {
+  padding: 6px 11px;
+  border-radius: 8px;
+  background: #f4f6f9;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (max-width: 1000px) {
+  .quarter-card {
+    flex-direction: column;
+    gap: 22px;
+    padding: 24px;
+  }
+  .qc-meta {
+    width: auto;
+  }
+  .ys-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .queue-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 560px) {
+  .ys-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .qc-title h2 {
+    font-size: 22px;
+  }
+  .history-banner {
+    flex-wrap: wrap;
+  }
+}
+/* Text for screen readers only: it adds context a sighted reader gets from
+   position or a badge, without appearing on screen. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }

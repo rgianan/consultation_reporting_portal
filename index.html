@@ -27,6 +27,19 @@
       href="https://ched-consultation-reporting-portal.vercel.app/"
     />
     <link rel="icon" type="image/png" href="/ched-logo.png" />
+    <!--
+      Fonts are requested from the HTML rather than @import-ed from the app
+      stylesheet. An @import is only discovered after that stylesheet has
+      downloaded and been parsed, which queued the font CSS, and then the font
+      files, behind it. Declared here they load in parallel with the app, and
+      the preconnects open both Google connections straight away.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap"
+    />
     <title>CHED Office of Student Development and Services</title>
   </head>
   <body>

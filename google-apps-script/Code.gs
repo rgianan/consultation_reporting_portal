@@ -25,8 +25,8 @@ var OTP_TTL = 600,
   // deliberately absent: once Central Office has accepted a report it is the
   // office's record for that quarter, and changing it goes back through them.
   REPLACEABLE = ["For review", "Needs revision"],
-  // Central Office hears at most once per office per this many seconds that a
-  // report awaiting review was replaced.
+  // Central Office hears at most once per report (office, quarter and year)
+  // per this many seconds that a report awaiting review was replaced.
   EDIT_NOTICE_COOLDOWN = 600,
   // The one-live-report-per-quarter rule keys on this value, so it has to come
   // from a fixed set. Left as free text, "Q3" and "3rd quarter" would each open
@@ -59,6 +59,7 @@ var OTP_TTL = 600,
   MAX_PARTICIPANTS = 1000000,
   PORTAL_NAME = "CHED-OSDS Consultation & Dialogue Reporting Portal";
 function doPost(e) {
+  resetMemo_();
   try {
     var p = JSON.parse((e.postData && e.postData.contents) || "{}");
     var a = p.action;
@@ -91,6 +92,7 @@ function doPost(e) {
   }
 }
 function doGet() {
+  resetMemo_();
   return out_({
     ok: true,
     service: "CHEDRO Consultation & Dialogue Portal",
@@ -228,7 +230,11 @@ function submitDialogue_(p) {
   if (p.region !== user.region)
     throw new Error("You can only submit reports for " + user.region + ".");
   var date = text_(p.date, 30),
-    quarter = text_(p.quarter, 30);
+    quarter = text_(p.quarter, 30),
+    // The reference of the report this submission was opened from, or empty
+    // for a new report. It is what the replacement check below compares
+    // against the live row, so a stale copy can never overwrite a newer one.
+    expected = text_(p.replaces, 60);
   // The reporting year is read back off this column by both this file and the
   // portal, so it has to be stored in a shape that always carries one.
   if (QUARTERS.indexOf(quarter) < 0)
@@ -311,8 +317,54 @@ function submitDialogue_(p) {
             "” and can no longer be replaced by your office. Ask Central " +
             "Office to return it for revision first.",
         );
+      var liveId = String(v[i][1]);
+      // Replacing is only safe when the office is replacing the version it
+      // actually opened. Without this, two officers editing the same report
+      // both "succeed" and the later save silently discards the earlier one,
+      // and a blank New report quietly overwrites a report someone else filed.
+      if (expected && expected !== liveId)
+        throw new Error(
+          expected +
+            " has already been replaced by " +
+            liveId +
+            " since you opened it. Open " +
+            liveId +
+            " under Reports and make your changes there, so " +
+            "nothing filed in between is lost.",
+        );
+      // A blank form may still stand in for a returned report - that report
+      // was sent back to be refiled, so there is no one else's work in it to
+      // lose. A report still awaiting review is different: it has to be
+      // opened and edited deliberately.
+      if (!expected && prior !== "Needs revision")
+        throw new Error(
+          "A " +
+            quarter +
+            " " +
+            year +
+            " report for " +
+            user.region +
+            " (" +
+            liveId +
+            ") is already on file and awaiting review. To change it, open it " +
+            "under Reports and choose Edit and resubmit.",
+        );
       supersede = i;
     }
+    // Asked to replace a report that is not in this reporting period at all:
+    // the quarter was changed, or the date moved into another year. Filing
+    // anyway would leave the original live beside the new one.
+    if (expected && !supersede)
+      throw new Error(
+        "The report you were editing (" +
+          expected +
+          ") is not on file for " +
+          quarter +
+          " " +
+          year +
+          ". A replacement has to stay in the same quarter and year - " +
+          "change the quarter or date back, or file a new report instead.",
+      );
     var id =
       "CDR-" +
       Utilities.formatDate(
@@ -414,11 +466,22 @@ function submitDialogue_(p) {
  */
 function notifyReviewersOfReplacement_(id, replaced, user, p) {
   try {
-    // One notice per office per window. An officer correcting two typos in a
+    // One notice per report per window. An officer correcting two typos in a
     // row should not send Central Office two emails, and the queue always shows
-    // the current version anyway.
+    // the current version anyway. Keyed on the reporting period rather than the
+    // office: keyed on the office, replacing the Q1 report silenced the notice
+    // for a Q2 report replaced a moment later, which a reviewer could be
+    // part-way through.
     var c = CacheService.getScriptCache(),
-      key = "edit_" + hash_(user.region);
+      key =
+        "edit_" +
+        hash_(
+          user.region +
+            "|" +
+            text_(p.quarter, 30) +
+            "|" +
+            text_(p.date, 30).slice(0, 4),
+        );
     if (c.get(key)) {
       tryAudit_("edit_notice_skipped", id, user.email, "replaces " + replaced);
       return;
@@ -584,6 +647,7 @@ function grantReportViewers_(folder, region) {
  * already in Drive, so attachments filed before this existed start opening for
  * reviewers too. Safe to re-run. */
 function repairAttachmentSharing() {
+  resetMemo_();
   var cfg = config_();
   if (!cfg.driveFolderId) throw new Error("DRIVE_FOLDER_ID is not configured.");
   var it = DriveApp.getFolderById(cfg.driveFolderId).getFolders(),
@@ -863,7 +927,7 @@ function esc_(v) {
 }
 function portalUrl_() {
   return (
-    PropertiesService.getScriptProperties().getProperty("PORTAL_URL") ||
+    config_().portalUrl ||
     "https://ched-consultation-reporting-portal.vercel.app/"
   );
 }
@@ -1567,12 +1631,15 @@ function pwHash_(password, salt) {
 }
 function listRegionalSubmissions_(p) {
   var u = accountSession_(p.accountToken, ["chedro_user"]),
-    range = sheet_("Dialogue Reports", headers_()).getDataRange(),
-    v = range.getDisplayValues(),
+    sh = sheet_("Dialogue Reports", headers_()),
+    v = sh.getDataRange().getDisplayValues(),
     // Display values render the date in the spreadsheet's locale, which a date
-    // input cannot consume and which is ambiguous to parse back. The raw cell
-    // is read alongside so a revision can prefill the date it already holds.
-    raw = range.getValues(),
+    // input cannot consume and which is ambiguous to parse back. The raw
+    // consultation-date column is read alongside so a revision can prefill the
+    // date it already holds - that one column, not a second copy of the sheet.
+    raw = sh
+      .getRange(1, headers_().indexOf("Consultation_Date") + 1, v.length, 1)
+      .getValues(),
     rows = [];
   for (var i = 1; i < v.length; i++)
     if (v[i][2] === u.region)
@@ -1584,7 +1651,7 @@ function listRegionalSubmissions_(p) {
         region: v[i][2],
         quarter: v[i][3],
         date: v[i][4],
-        dateIso: isoDate_(raw[i][4]),
+        dateIso: isoDate_(raw[i][0]),
         participants: Number(v[i][5] || 0),
         initiatives: v[i][6],
         student: v[i][7],
@@ -1801,10 +1868,34 @@ function headers_() {
     "Admin_Remarks",
   ];
 }
+/**
+ * Per-request memo for the handles every action reaches for repeatedly. Each
+ * lookup is a round-trip to a Google service, and before this a single sign-in
+ * made fifteen separate script-property reads and opened the spreadsheet twice.
+ *
+ * Only handles and configuration live here - never row data, which another
+ * request may change at any moment. resetMemo_() runs at the top of every entry
+ * point, so nothing can outlive the request that loaded it even if the runtime
+ * were ever to reuse global state between executions.
+ */
+var MEMO_ = {};
+function resetMemo_() {
+  MEMO_ = { sheets: {} };
+}
+function spreadsheet_() {
+  if (!MEMO_.ss) MEMO_.ss = SpreadsheetApp.openById(config_().spreadsheetId);
+  return MEMO_.ss;
+}
 function sheet_(name, headers) {
-  var ss = SpreadsheetApp.openById(config_().spreadsheetId),
-    sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  if (!MEMO_.sheets) MEMO_.sheets = {};
+  var sh = MEMO_.sheets[name];
+  if (sh) return sh;
+  var ss = spreadsheet_();
+  sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  // The header check only matters the first time a sheet is touched in a
+  // request; a memoised handle has already been through it.
   if (sh.getLastRow() === 0) sh.appendRow(headers);
+  MEMO_.sheets[name] = sh;
   return sh;
 }
 function audit_(action, ref, email, detail) {
@@ -1832,18 +1923,19 @@ function tryAudit_(action, ref, email, detail) {
   }
 }
 function config_() {
-  var p = PropertiesService.getScriptProperties();
-  return {
-    spreadsheetId: p.getProperty("SPREADSHEET_ID"),
-    secret: p.getProperty("OTP_SECRET"),
-    domain: String(
-      p.getProperty("ALLOWED_EMAIL_DOMAIN") || "ched.gov.ph",
-    ).toLowerCase(),
-    driveFolderId: p.getProperty("DRIVE_FOLDER_ID"),
-    attachmentSharing: String(
-      p.getProperty("ATTACHMENT_SHARING") || "domain",
-    ).toLowerCase(),
+  if (MEMO_.config) return MEMO_.config;
+  // One getProperties() call instead of a getProperty() per key: this runs
+  // behind nearly every sheet, signature and audit write in a request.
+  var p = PropertiesService.getScriptProperties().getProperties();
+  MEMO_.config = {
+    spreadsheetId: p.SPREADSHEET_ID,
+    secret: p.OTP_SECRET,
+    domain: String(p.ALLOWED_EMAIL_DOMAIN || "ched.gov.ph").toLowerCase(),
+    driveFolderId: p.DRIVE_FOLDER_ID,
+    attachmentSharing: String(p.ATTACHMENT_SHARING || "domain").toLowerCase(),
+    portalUrl: p.PORTAL_URL,
   };
+  return MEMO_.config;
 }
 function domain_(e, c) {
   if (c.domain && e.split("@")[1] !== c.domain)
@@ -1958,6 +2050,7 @@ function out_(o) {
 }
 /** Run once after setting SPREADSHEET_ID and DRIVE_FOLDER_ID in Script Properties. */
 function setupPortal() {
+  resetMemo_();
   var props = PropertiesService.getScriptProperties(),
     current = props.getProperties(),
     updates = {};
@@ -1972,11 +2065,14 @@ function setupPortal() {
   if (!current.ALLOWED_EMAIL_DOMAIN)
     updates.ALLOWED_EMAIL_DOMAIN = "ched.gov.ph";
   props.setProperties(updates, false);
+  // Anything memoised before the write above would be missing what it set.
+  resetMemo_();
   sheet_("Dialogue Reports", headers_());
   sheet_("Users", usersHeaders_());
   sheet_("Audit Log", ["Timestamp", "Action", "Reference", "Email", "Detail"]);
 }
 function seedAdmin() {
+  resetMemo_();
   var props = PropertiesService.getScriptProperties(),
     email = email_(props.getProperty("INITIAL_ADMIN_EMAIL")),
     password = String(props.getProperty("INITIAL_ADMIN_PASSWORD") || ""),

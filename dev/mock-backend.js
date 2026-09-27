@@ -244,7 +244,7 @@ function seed() {
     loginFailures: new Map(),
     // email -> revocation timestamp, mirroring revoke_() in Code.gs.
     revoked: new Map(),
-    // Regions already told about a pre-review replacement. Code.gs expires
+    // Reports (office|quarter|year) already told about a pre-review replacement. Code.gs expires
     // these after ten minutes; the mock holds them until the server restarts.
     editNotified: new Set(),
     otpMailCount: 0,
@@ -703,6 +703,44 @@ const actions = {
           "” and can no longer be replaced by your office. Ask Central " +
           "Office to return it for revision first.",
       );
+    // Mirrors the replacement checks in submitDialogue_(): only the version the
+    // office opened may be replaced, a blank form may only stand in for a
+    // returned report, and a replacement must stay in its reporting period.
+    const expected = text(p.replaces, 60);
+    if (clash && expected && expected !== clash.id)
+      throw fail(
+        expected +
+          " has already been replaced by " +
+          clash.id +
+          " since you opened it. Open " +
+          clash.id +
+          " under Reports and make your changes there, so " +
+          "nothing filed in between is lost.",
+      );
+    if (clash && !expected && clash.status !== "Needs revision")
+      throw fail(
+        "A " +
+          quarter +
+          " " +
+          year +
+          " report for " +
+          u.region +
+          " (" +
+          clash.id +
+          ") is already on file and awaiting review. To change it, open it " +
+          "under Reports and choose Edit and resubmit.",
+      );
+    if (expected && !clash)
+      throw fail(
+        "The report you were editing (" +
+          expected +
+          ") is not on file for " +
+          quarter +
+          " " +
+          year +
+          ". A replacement has to stay in the same quarter and year - " +
+          "change the quarter or date back, or file a new report instead.",
+      );
     if (!p.attendanceFile) throw fail("Attendance sheet is required.");
     const photos = Array.isArray(p.photoFiles) ? p.photoFiles : [];
     if (!photos.length) throw fail("Photo documentation is required.");
@@ -772,22 +810,25 @@ const actions = {
     // has not been told about; one replaced after being returned is the reply
     // they asked for, so only the first is announced.
     if (replaced && priorStatus === "For review") {
-      if (db.editNotified.has(u.region)) {
+      // Keyed per report, as in Code.gs, so one report's cooldown never
+      // silences a notice about another.
+      const noticeKey = u.region + "|" + quarter + "|" + year;
+      const admins = db.users.filter(
+        (a) =>
+          a.role === "central_admin" &&
+          a.status === "Approved" &&
+          a.active !== false,
+      );
+      if (db.editNotified.has(noticeKey)) {
         console.log(
           "\n  [mock email] suppressed: " +
-            u.region +
+            noticeKey +
             " already notified within the cooldown\n",
         );
-      } else {
-        db.editNotified.add(u.region);
-        db.users
-          .filter(
-            (a) =>
-              a.role === "central_admin" &&
-              a.status === "Approved" &&
-              a.active !== false,
-          )
-          .forEach((a) =>
+      } else if (admins.length) {
+        // Spent only once there is someone to tell, matching Code.gs.
+        db.editNotified.add(noticeKey);
+        admins.forEach((a) =>
             mail(
               a.email,
               PORTAL_NAME + ": Report replaced before review (" + id + ")",

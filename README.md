@@ -55,15 +55,19 @@ scoped to `apply: "serve"` — it is never part of a production build.
 `localhost:5173` in one tab as Central Office and a second tab as a CHEDRO user,
 and refresh either to see the other's changes.
 
-1. **Sign in as Region VII** (`rdelacruz@…`) to land on a populated workspace: three
-   reports, the quarterly timeline, and a current-quarter card.
-2. **File a report** with *New report*. The office is locked to your account, so only
-   the quarter and date are yours to pick. Any small PDF and any image satisfy the
-   attendance and photo steps — the mock records filenames and discards the bytes.
-3. **Switch to Central Office**, open *Submissions*, filter to that CHEDRO, expand
-   the row and *Return for revision* with remarks.
-4. **Back on the regional tab**, refresh: the red banner appears and the remarks
-   show inside the report. Validate it from Central Office and the banner clears.
+1. **Sign in as Region VII** (`rdelacruz@…`) to land on **Home**: this quarter's
+   report card, which offers the one next step its state allows, and the reporting
+   year's four quarters below it.
+2. **File this quarter's report** from *Start report* on that card. The office is
+   locked to your account, so only the quarter and date are yours to pick. Any small
+   PDF and any image satisfy the attendance and photo steps — the mock records
+   filenames and discards the bytes. (*File a report* on **Reports** is the general
+   way in, for example for a previous year's fourth quarter.)
+3. **Switch to Central Office**. It lands on the **Review queue**; open the report
+   under *Awaiting review* and *Return for revision* with remarks.
+4. **Back on the regional tab**, refresh: Home shows the report returned, with the
+   remarks and *Revise and resubmit*, and the bell and the *Reports* badge count it.
+   Validate the corrected version from the queue and both clear.
 
 To test a region that has no seed data, register a fresh account for it from
 *Create account*, then approve it as Central Office. To pre-seed one instead, add
@@ -88,7 +92,7 @@ second script bound to a separate Sheet and Drive folder and point `.env` at tha
 
 ### Adding users from Central Office
 
-**Admin → User access → Add user.** Fill in the name, official email, role and —
+**Central Office → Accounts → Add user.** Fill in the name, official email, role and —
 for a CHEDRO account — the regional office. The person is emailed a link and
 sets their own password; the invitation expires after seven days.
 
@@ -142,7 +146,7 @@ expire. The portal recognises this and returns the user to the sign-in screen
 with a short explanation instead of leaving them on a page where nothing loads.
 
 An administrator editing the **Users** sheet by hand is not noticed until the
-session expires on its own — use the *User access* screen to reject an account
+session expires on its own — use the *Accounts* screen to suspend or reject an account
 if you need it to stop working now.
 
 ### Who can open attachment links
@@ -190,13 +194,21 @@ Attachments are the one thing a replacement cannot inherit: the portal stores
 Drive links, not the files, so the attendance sheet and photos are attached
 again each time.
 
+A replacement names the report it was opened from, and is only accepted if that
+report is still the live one. If a colleague in the same office has already
+replaced it in the meantime, the save is refused and points at the newer
+version, so neither officer's changes are silently lost. A blank report (*Start report*
+or *File a report*) cannot replace a report that is still `For review` — that has to be opened and
+edited deliberately — but it can stand in for one that was returned for
+revision, since that report was sent back to be refiled.
+
 **Replacing a report that was still `For review` emails every active Central
 Office administrator**, because a reviewer can otherwise be part-way through a
 report that has quietly been superseded and only find out when their decision is
 refused. Replacing a `Needs revision` report sends nothing — that replacement is
 the reply Central Office asked for. To keep an officer fixing two typos in a row
-from sending two emails, each office triggers at most one such notice every ten
-minutes (`EDIT_NOTICE_COOLDOWN`); a suppressed notice is recorded in the Audit
+from sending two emails, each report (office, quarter and year) triggers at
+most one such notice every ten minutes (`EDIT_NOTICE_COOLDOWN`); a suppressed notice is recorded in the Audit
 Log as `edit_notice_skipped`, and the review queue always shows the current
 version regardless.
 

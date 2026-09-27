@@ -28,6 +28,9 @@ import {
   Info,
   Layers,
   MessageSquareQuote,
+  House,
+  Inbox,
+  Pencil,
 } from "lucide-react";
 import "./styles.css";
 
@@ -87,10 +90,14 @@ function cachedApi(payload, force) {
   cache.set(key, { at: Date.now(), promise });
   return promise;
 }
+/** Fired whenever cached data is dropped, so anything summarising it (the
+ * notification bell, the sidebar badges) re-reads instead of going stale. */
+const DATA_CHANGED = "chedro:data-changed";
 /** Drop the cached reads a write has just made stale. */
 function invalidate(...actions) {
   for (const key of [...cache.keys()])
     if (actions.some((a) => key.startsWith(a + "|"))) cache.delete(key);
+  window.dispatchEvent(new Event(DATA_CHANGED));
 }
 
 const regions = [
@@ -150,6 +157,64 @@ const FILTER_STATUSES = STATUSES.concat(SUPERSEDED);
 // accepted a report, changing it goes back through them.
 const REPLACEABLE = ["For review", "Needs revision"];
 const isLive = (r) => r.status !== SUPERSEDED;
+/**
+ * Central Office pages, in sidebar order. Each names itself in the header, and
+ * only the ones that read a reporting period show the period and export
+ * controls. Accounts has no period, so it never carries them.
+ */
+const ADMIN_PAGES = {
+  queue: {
+    label: "Review queue",
+    subtitle: "Reports waiting on a Central Office decision",
+    period: true,
+  },
+  overview: {
+    label: "National overview",
+    subtitle: "Coverage and findings across the 17 regional offices",
+    period: true,
+  },
+  themes: {
+    label: "Themes & actions",
+    subtitle: "What offices are raising, ranked by how widely it recurs",
+    period: true,
+  },
+  compliance: {
+    label: "Compliance",
+    subtitle: "Completeness of Annex A reports, and offices to follow up",
+    period: true,
+  },
+  accounts: {
+    label: "Accounts",
+    subtitle: "Invitations, account requests and suspensions",
+    period: false,
+  },
+};
+/** First day of each quarter, for telling a quarter that has not started yet
+ * apart from one that was simply never filed. */
+const QUARTER_OPENS = ["1 January", "1 April", "1 July", "1 October"];
+/** The replacement a superseded row points at, read from the note submission
+ * writes onto it: "[Replaced by CDR-… on …]". */
+const replacedBy = (r) =>
+  (String(r.remarks || "").match(/\[Replaced by ([A-Z0-9-]+)/) || [])[1] || "";
+/**
+ * For each live report that replaced another, what it replaced and whether
+ * that happened before review. A replaced row that carries no remarks of its
+ * own was still awaiting review when it went; one that does was returned first,
+ * so its successor is the correction Central Office asked for.
+ */
+function replacements(rows) {
+  const out = {};
+  rows.forEach((r) => {
+    if (r.status !== SUPERSEDED) return;
+    const by = replacedBy(r);
+    if (!by) return;
+    const own = String(r.remarks || "")
+      .replace(/\[Replaced by [^\]]*\]/g, "")
+      .trim();
+    out[by] = { id: r.id, beforeReview: !own };
+  });
+  return out;
+}
 const quarterNow = () => QUARTERS[Math.floor(new Date().getMonth() / 3)];
 const yearNow = () => String(new Date().getFullYear());
 /** Reporting year of a submission, read from the consultation date and
@@ -427,13 +492,23 @@ function App() {
       }
     }),
     [page, setPage] = useState("dashboard"),
-    [adminTab, setAdminTab] = useState("summary"),
+    // The review queue is where Central Office lands: it is the page that
+    // holds decisions only they can make.
+    [adminTab, setAdminTab] = useState("queue"),
     [mobile, setMobile] = useState(false),
     // The returned report a CHEDRO is correcting, carried to the form so the
     // office edits its previous answers instead of retyping them.
     [revising, setRevising] = useState(null),
+    // The quarter a blank report is being started for, when it was started
+    // from a particular quarter rather than the generic "File a report".
+    [startQuarter, setStartQuarter] = useState(""),
+    // A report to open in Reports when arriving from Home.
+    [focus, setFocus] = useState(""),
+    // What the last submission reported back, shown once on Reports.
+    [flash, setFlash] = useState(null),
     [signedOut, setSignedOut] = useState(""),
     [notifications, setNotifications] = useState(false);
+  const attention = useAttention(account);
   // A session can end while the tab is open: it lapses after two hours, or the
   // Central Office rejects the account, or the password is reset elsewhere.
   useEffect(() => {
@@ -464,7 +539,58 @@ function App() {
   const navigate = (p) => {
     setPage(p);
     setMobile(false);
+    setNotifications(false);
+    // Arriving somewhere from the sidebar is a fresh visit: no report held
+    // open, no half-started form carried over.
+    setFocus("");
+    setRevising(null);
+    setStartQuarter("");
+    setFlash(null);
   };
+  const goAdmin = (tab) => {
+    setAdminTab(tab);
+    setMobile(false);
+    setNotifications(false);
+  };
+  /** Open the Annex A form: blank for a quarter, or prefilled from a report. */
+  const openForm = ({ report = null, quarter = "" } = {}) => {
+    setRevising(report);
+    setStartQuarter(report ? "" : quarter);
+    setFocus("");
+    setNotifications(false);
+    setPage("new");
+  };
+  const openReport = (report) => {
+    setFocus(report.id);
+    setNotifications(false);
+    setPage("reports");
+  };
+  const adminPage = ADMIN_PAGES[adminTab] || ADMIN_PAGES.queue;
+  const heading = admin
+    ? { title: adminPage.label, subtitle: adminPage.subtitle }
+    : currentPage === "new"
+      ? {
+          title: revising
+            ? `${revising.status === "Needs revision" ? "Revise" : "Edit"} ${revising.id}`
+            : "New consultation report",
+          subtitle: "Annex A · Consultation and Dialogue Report",
+        }
+      : currentPage === "reports"
+        ? {
+            title: "Reports",
+            subtitle: `${account.region} · every report your office has filed`,
+          }
+        : {
+            title: "Home",
+            subtitle: `${account.region} · reporting year ${yearNow()}`,
+          };
+  // Only items that call for action count toward the badge. An unfiled quarter
+  // is listed but not counted: it would sit on the bell for three months.
+  const bellCount = attention
+    ? admin
+      ? attention.awaiting + attention.requests
+      : attention.returned
+    : 0;
   return (
     <div className="shell">
       <aside className={mobile ? "sidebar open" : "sidebar"}>
@@ -482,88 +608,68 @@ function App() {
             <X />
           </button>
         </div>
-        <nav>
+        <nav aria-label="Main">
           {admin ? (
             <>
-              <p className="nav-label">Administration</p>
+              <p className="nav-label">Reports</p>
               <Nav
-                active={adminTab === "summary"}
-                icon={<LayoutDashboard />}
-                onClick={() => {
-                  setAdminTab("summary");
-                  navigate("admin");
-                }}
+                active={adminTab === "queue"}
+                icon={<Inbox />}
+                onClick={() => goAdmin("queue")}
+                badge={attention?.awaiting || 0}
+                badgeLabel={`${attention?.awaiting || 0} awaiting review`}
               >
-                National summary
+                Review queue
               </Nav>
               <Nav
-                active={adminTab === "submissions"}
-                icon={<FileText />}
-                onClick={() => {
-                  setAdminTab("submissions");
-                  navigate("admin");
-                }}
+                active={adminTab === "overview"}
+                icon={<LayoutDashboard />}
+                onClick={() => goAdmin("overview")}
               >
-                Regional submissions
+                National overview
               </Nav>
               <Nav
                 active={adminTab === "themes"}
                 icon={<TrendingUp />}
-                onClick={() => {
-                  setAdminTab("themes");
-                  navigate("admin");
-                }}
+                onClick={() => goAdmin("themes")}
               >
                 Themes & actions
               </Nav>
               <Nav
                 active={adminTab === "compliance"}
                 icon={<ShieldCheck />}
-                onClick={() => {
-                  setAdminTab("compliance");
-                  navigate("admin");
-                }}
+                onClick={() => goAdmin("compliance")}
               >
                 Compliance
               </Nav>
+              <p className="nav-label">Administration</p>
               <Nav
-                active={adminTab === "users"}
+                active={adminTab === "accounts"}
                 icon={<Users />}
-                onClick={() => {
-                  setAdminTab("users");
-                  navigate("admin");
-                }}
+                onClick={() => goAdmin("accounts")}
+                badge={attention?.requests || 0}
+                badgeLabel={`${attention?.requests || 0} account request${attention?.requests === 1 ? "" : "s"}`}
               >
-                User access
+                Accounts
               </Nav>
             </>
           ) : (
             <>
               <Nav
                 active={page === "dashboard"}
-                icon={<LayoutDashboard />}
+                icon={<House />}
                 onClick={() => navigate("dashboard")}
               >
-                Overview
-              </Nav>
-              <Nav
-                active={page === "new"}
-                icon={<FilePlus2 />}
-                onClick={() => {
-                  // Asking for a new report means a blank one, even if a
-                  // revision was started and abandoned.
-                  setRevising(null);
-                  navigate("new");
-                }}
-              >
-                New report
+                Home
               </Nav>
               <Nav
                 active={page === "reports"}
                 icon={<FileText />}
                 onClick={() => navigate("reports")}
+                badge={attention?.returned || 0}
+                badgeLabel={`${attention?.returned || 0} returned for revision`}
               >
-                Regional submissions
+                Reports
               </Nav>
             </>
           )}
@@ -584,6 +690,7 @@ function App() {
           </div>
           <button
             title="Sign out"
+            aria-label="Sign out"
             onClick={() => {
               sessionStorage.removeItem("chedro_account");
               cache.clear();
@@ -604,22 +711,8 @@ function App() {
             <Menu />
           </button>
           <div>
-            <h1>
-              {currentPage === "new"
-                ? "New consultation report"
-                : currentPage === "reports"
-                  ? "Regional submissions"
-                  : currentPage === "admin"
-                    ? "CHEDRO submission summary"
-                    : `Good morning, ${account.name.split(" ")[0]}`}
-            </h1>
-            <p>
-              {currentPage === "new"
-                ? "Annex A · Consultation and Dialogue Report"
-                : currentPage === "admin"
-                  ? "National view of regional consultation activity"
-                  : `${account.region} reporting workspace`}
-            </p>
+            <h1>{heading.title}</h1>
+            <p>{heading.subtitle}</p>
           </div>
           <div className="head-actions">
             <span className="role-pill">
@@ -627,64 +720,71 @@ function App() {
             </span>
             <button
               className="icon"
-              aria-label="Notifications"
+              aria-label={
+                bellCount
+                  ? `Notifications, ${bellCount} need${bellCount === 1 ? "s" : ""} attention`
+                  : "Notifications"
+              }
               aria-expanded={notifications}
               onClick={() => setNotifications(!notifications)}
             >
               <Bell />
+              {bellCount > 0 && <em className="bell-count">{bellCount}</em>}
             </button>
             {notifications && (
               <div className="notification-pop">
-                <b>Notifications</b>
-                <p>
-                  {admin
-                    ? "Review account requests and current-quarter submissions."
-                    : `${quarterNow()} reporting is open.`}
-                </p>
-                <small>
-                  {admin
-                    ? "Open User access to review them."
-                    : "Complete all Annex A sections before submission."}
-                </small>
+                <b>Needs attention</b>
+                <Attention
+                  admin={admin}
+                  attention={attention}
+                  onQueue={() => goAdmin("queue")}
+                  onAccounts={() => goAdmin("accounts")}
+                  onHome={() => navigate("dashboard")}
+                  onReports={() => navigate("reports")}
+                />
               </div>
             )}
           </div>
         </header>
         <section className="content">
           {currentPage === "dashboard" && (
-            <Dashboard
+            <Home
               account={account}
-              go={() => {
-                // "Create consultation report" means a blank one, even if a
-                // revision was started and left open.
-                setRevising(null);
-                setPage("new");
-              }}
-              viewReports={() => setPage("reports")}
+              onStart={(quarter) => openForm({ quarter })}
+              onRevise={(report) => openForm({ report })}
+              onOpen={openReport}
             />
           )}{" "}
           {currentPage === "new" && (
             <ReportForm
               // The form seeds its state once, on mount. Without a key that
-              // changes with the report being corrected, switching between a
-              // revision and a blank report while already on this page leaves
-              // the previous answers sitting in the fields.
-              key={revising ? revising.id : "blank"}
+              // changes with what is being filed, switching between a revision
+              // and a blank report while already on this page leaves the
+              // previous answers sitting in the fields.
+              key={revising ? revising.id : `blank-${startQuarter}`}
               account={account}
               revising={revising}
-              done={() => {
-                setRevising(null);
-                setPage("reports");
+              startQuarter={startQuarter}
+              done={(d) => {
+                navigate("reports");
+                if (d)
+                  setFlash({
+                    text: d.message || "Consultation report submitted.",
+                    warn: !!d.warning,
+                  });
               }}
             />
           )}{" "}
           {currentPage === "reports" && (
             <Reports
+              // Remounted per report so arriving from Home opens that report,
+              // and arriving from the sidebar opens none.
+              key={focus || "all"}
               account={account}
-              onRevise={(report) => {
-                setRevising(report);
-                setPage("new");
-              }}
+              focus={focus}
+              flash={flash}
+              onRevise={(report) => openForm({ report })}
+              onNew={() => openForm()}
             />
           )}{" "}
           {currentPage === "admin" && (
@@ -693,6 +793,49 @@ function App() {
         </section>
       </main>
     </div>
+  );
+}
+/** The bell's contents: what needs doing, each line a way to go and do it. */
+function Attention({ admin, attention, onQueue, onAccounts, onHome, onReports }) {
+  if (!attention) return <p>Loading…</p>;
+  const items = admin
+    ? [
+        attention.awaiting > 0 && {
+          text: `${attention.awaiting} report${attention.awaiting === 1 ? "" : "s"} awaiting review`,
+          go: onQueue,
+          label: "Open the review queue",
+        },
+        attention.requests > 0 && {
+          text: `${attention.requests} account request${attention.requests === 1 ? "" : "s"} to verify`,
+          go: onAccounts,
+          label: "Open accounts",
+        },
+      ]
+    : [
+        attention.returned > 0 && {
+          text: `${attention.returned} report${attention.returned === 1 ? "" : "s"} returned for revision`,
+          go: onReports,
+          label: "Open reports",
+        },
+        attention.unfiled && {
+          text: `Your ${quarterNow()} report has not been filed`,
+          go: onHome,
+          label: "Go to Home",
+        },
+      ];
+  const shown = items.filter(Boolean);
+  if (!shown.length) return <p>Nothing needs your attention.</p>;
+  return (
+    <ul className="attention-list">
+      {shown.map((item) => (
+        <li key={item.text}>
+          <button type="button" onClick={item.go} aria-label={`${item.text}. ${item.label}`}>
+            <span>{item.text}</span>
+            <ChevronRight />
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 /** The invitation token from the emailed link, if this page was opened from one. */
@@ -1130,16 +1273,105 @@ function Login({ onLogin, notice }) {
     </div>
   );
 }
-function Nav({ active, icon, children, onClick }) {
+function Nav({ active, icon, children, onClick, badge, badgeLabel }) {
   return (
-    <button className={active ? "nav active" : "nav"} onClick={onClick}>
+    <button
+      className={active ? "nav active" : "nav"}
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+    >
       {icon}
-      <span>{children}</span>
-      {active && <ChevronRight />}
+      <span>
+        {children}
+        {/* The count is read out with what it counts: aria-label on the
+            badge itself is ignored by screen readers, which would announce a
+            bare "3". */}
+        {badge > 0 && badgeLabel && <span className="sr-only">, {badgeLabel}</span>}
+      </span>
+      {badge > 0 && (
+        <em className="nav-badge" aria-hidden="true">
+          {badge}
+        </em>
+      )}
+      {active && !badge && <ChevronRight />}
     </button>
   );
 }
-function Dashboard({ go, account, viewReports }) {
+/**
+ * What needs this person's attention, for the bell and the sidebar badges.
+ * Read through the same cache as the pages, so it costs no extra request while
+ * a page is showing the same data, and re-read whenever a write drops that
+ * cache - a decision made on the page updates the counts beside it.
+ */
+function useAttention(account) {
+  const [counts, setCounts] = useState(null);
+  useEffect(() => {
+    if (!account) return undefined;
+    let alive = true;
+    const admin = account.role.startsWith("central");
+    const load = () => {
+      const reads = admin
+        ? [
+            cachedApi({ action: "adminDashboard", accountToken: account.token }),
+            cachedApi({ action: "listAccounts", accountToken: account.token }),
+          ]
+        : [
+            cachedApi({
+              action: "listRegionalSubmissions",
+              accountToken: account.token,
+            }),
+          ];
+      Promise.all(reads)
+        .then(([reports, accounts]) => {
+          if (!alive) return;
+          const live = (reports.rows || []).filter(isLive);
+          if (admin)
+            setCounts({
+              awaiting: live.filter((r) => r.status === "For review").length,
+              requests: (accounts.rows || []).filter(
+                (u) => u.status === "Pending",
+              ).length,
+            });
+          else {
+            const year = yearNow(),
+              quarter = quarterNow();
+            setCounts({
+              returned: live.filter((r) => r.status === "Needs revision")
+                .length,
+              unfiled: !live.some(
+                (r) => r.quarter === quarter && yearOf(r) === year,
+              ),
+            });
+          }
+        })
+        // The bell is a summary: if it cannot load, the pages still say why.
+        .catch(() => alive && setCounts(null));
+    };
+    load();
+    window.addEventListener(DATA_CHANGED, load);
+    return () => {
+      alive = false;
+      window.removeEventListener(DATA_CHANGED, load);
+    };
+  }, [account]);
+  return counts;
+}
+/** Badge colours per report state, matching the status badges elsewhere. */
+const STATE_TONE = {
+  "Not filed": "not-filed",
+  "Not yet open": "not-filed",
+  "For review": "for-review",
+  "Needs revision": "needs-revision",
+  Validated: "validated",
+};
+/**
+ * The CHEDRO's landing page, built around the one thing each quarter asks of
+ * the office: this quarter's report. Whatever state it is in decides the single
+ * next step on offer, so the page never points at an action the backend will
+ * refuse - the old "Create consultation report" button stayed up after the
+ * quarter was filed, when a blank report can no longer replace it.
+ */
+function Home({ account, onStart, onRevise, onOpen }) {
   const [rows, setRows] = useState([]),
     [loading, setLoading] = useState(true),
     [error, setError] = useState("");
@@ -1149,9 +1381,8 @@ function Dashboard({ go, account, viewReports }) {
       action: "listRegionalSubmissions",
       accountToken: account.token,
     })
-      // The overview has no status filter, so replaced reports are dropped on
-      // arrival: they would otherwise double every stat and leave the timeline
-      // showing a quarter as both submitted and awaiting revision.
+      // Replaced reports are history: counting them would show a quarter as both
+      // filed and returned, and double every figure.
       .then((d) => alive && setRows((d.rows || []).filter(isLive)))
       .catch((e) => alive && setError(e.message))
       .finally(() => alive && setLoading(false));
@@ -1159,120 +1390,198 @@ function Dashboard({ go, account, viewReports }) {
       alive = false;
     };
   }, [account.token]);
-  const currentQuarter = quarterNow(),
-    currentYear = yearNow(),
-    // The quarterly timeline and current-quarter card cover this reporting
-    // year only, so a prior year's report never marks this year as submitted.
-    thisYearRows = rows.filter((r) => yearOf(r) === currentYear),
-    currentReport = thisYearRows.find((r) => r.quarter === currentQuarter),
-    validated = rows.filter((r) => r.status === "Validated").length,
-    underReview = rows.filter((r) => r.status === "For review").length,
-    participants = rows.reduce(
+  const year = yearNow(),
+    quarterIndex = QUARTERS.indexOf(quarterNow()),
+    thisYear = rows.filter((r) => yearOf(r) === year),
+    reportFor = (quarter) => thisYear.find((r) => r.quarter === quarter),
+    current = reportFor(QUARTERS[quarterIndex]),
+    state = current ? current.status : "Not filed",
+    participants = thisYear.reduce(
       (sum, r) => sum + Number(r.participants || 0),
       0,
-    );
+    ),
+    validated = thisYear.filter((r) => r.status === "Validated").length;
+  const card = {
+    "Not filed": {
+      headline: "Your report is due",
+      body: "One Consultation and Dialogue Report (Annex A) is required each quarter, with the attendance sheet and photo documentation attached.",
+      primary: [`Start ${QUARTERS[quarterIndex]} report`, () => onStart(QUARTERS[quarterIndex])],
+    },
+    "For review": {
+      headline: "Filed, awaiting review",
+      body: "Central Office has not reviewed this report yet, so your office can still change it. Editing files a new version that replaces this one.",
+      primary: ["View report", () => onOpen(current)],
+      secondary: ["Edit before review", () => onRevise(current)],
+    },
+    "Needs revision": {
+      headline: "Returned for revision",
+      body: "Central Office has asked your office to correct this report. Your previous answers carry over; the attendance sheet and photos are attached again.",
+      primary: ["Revise and resubmit", () => onRevise(current)],
+      secondary: ["View report", () => onOpen(current)],
+    },
+    Validated: {
+      headline: "Validated",
+      body: "Central Office has accepted this report as your office’s record for the quarter. To change it, ask Central Office to return it for revision.",
+      primary: ["View report", () => onOpen(current)],
+    },
+  }[state] || {
+    // A status the portal does not recognise (a hand-edited cell): say what it
+    // is and offer only the report itself, never an action that may be refused.
+    headline: state,
+    body: "This report has a status the portal does not recognise. Contact Central Office if it needs to change.",
+    primary: ["View report", () => onOpen(current)],
+  };
   return (
     <>
-      <div className="hero">
-        <div>
-          <span className="eyebrow">
-            {currentQuarter} · {new Date().getFullYear()}
-          </span>
-          <h2>
-            Turn every dialogue into
-            <br />
-            visible action.
-          </h2>
-          <p>
-            Capture regional consultations, agreements, attendance and
-            documentation in one clear record.
-          </p>
-          <button className="primary" onClick={go}>
-            <FilePlus2 />
-            Create consultation report
-          </button>
-        </div>
-        <div className="hero-card">
-          <span>Current-quarter report</span>
-          <b>{currentReport ? "Submitted" : "Pending"}</b>
-          <div className="progress">
-            <i style={{ width: currentReport ? "100%" : "0%" }} />
-          </div>
-          <p>
-            {currentReport ? <CheckCircle2 /> : <Clock3 />} {currentQuarter}:{" "}
-            {currentReport?.status || "No submission yet"}
-          </p>
-          <small>
-            One consultation and dialogue report is required quarterly.
-          </small>
-        </div>
-      </div>
       {error && <p className="notice error-notice">{error}</p>}
-      {loading && <SkStats />}
-      <div className="stats" hidden={loading}>
-        <Stat
-          icon={<FileText />}
-          n={String(rows.length)}
-          label="Reports submitted"
-          tone="blue"
-        />
-        <Stat
-          icon={<CheckCircle2 />}
-          n={String(validated)}
-          label="Validated"
-          tone="green"
-        />
-        <Stat
-          icon={<Clock3 />}
-          n={String(underReview)}
-          label="Under review"
-          tone="amber"
-        />
-        <Stat
-          icon={<Users />}
-          n={participants.toLocaleString()}
-          label="Participants reached"
-          tone="purple"
-        />
-      </div>
-      <div className="grid-two">
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <h3>Recent submissions</h3>
-              <p>Your latest consultation reports</p>
+      {/* Nothing actionable until the office's reports are known. Before they
+          arrive - or when they fail to - every quarter would read as unfiled,
+          and "Start report" or "File this report" on a quarter that was in
+          fact returned would file a blank report over it. */}
+      {loading ? (
+        <SkPanel rows={3} />
+      ) : error ? null : (
+        <section className="quarter-card" aria-labelledby="quarter-heading">
+          <div className="qc-main">
+            <span className="qc-eyebrow">
+              This quarter · {QUARTERS[quarterIndex]} {year}
+            </span>
+            <div className="qc-title">
+              <h2 id="quarter-heading">{card.headline}</h2>
+              <span className={`state-badge ${STATE_TONE[state] || "not-filed"}`}>
+                {state}
+              </span>
             </div>
-            <button onClick={viewReports}>View all</button>
-          </div>
-          {loading ? (
-            <SkPanel rows={3} head={false} />
-          ) : (
-            <ReportTable rows={rows.slice(0, 3)} />
-          )}
-        </div>
-        <div className="panel timeline">
-          <div className="panel-head">
-            <div>
-              <h3>Quarterly timeline</h3>
-              <p>Reporting year {currentYear}</p>
+            <p>{card.body}</p>
+            {state === "Needs revision" && current.remarks && (
+              <div className="qc-remarks">
+                <b>Central Office remarks</b>
+                <span>{current.remarks}</span>
+              </div>
+            )}
+            <div className="qc-actions">
+              <button type="button" className="primary" onClick={card.primary[1]}>
+                {state === "Not filed" ? (
+                  <FilePlus2 />
+                ) : state === "Needs revision" ? (
+                  <Pencil />
+                ) : (
+                  <Eye />
+                )}
+                {card.primary[0]}
+              </button>
+              {card.secondary && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={card.secondary[1]}
+                >
+                  {card.secondary[0]}
+                </button>
+              )}
             </div>
           </div>
-          {QUARTERS.map((quarter, i) => {
-            const report = thisYearRows.find((r) => r.quarter === quarter);
-            return (
-              <div className={report ? "mile done" : "mile"} key={quarter}>
-                <i>{report ? <CheckCircle2 /> : i + 1}</i>
+          {current ? (
+            <dl className="qc-meta">
+              <>
                 <div>
-                  <b>{quarter}</b>
-                  <small>
-                    {report ? report.status : "No submission recorded"}
-                  </small>
+                  <dt>Reference</dt>
+                  <dd>{current.id}</dd>
                 </div>
+                <div>
+                  <dt>Consultation held</dt>
+                  <dd>{current.date || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Participants</dt>
+                  <dd>{Number(current.participants || 0).toLocaleString()}</dd>
+                </div>
+                {current.submittedBy && (
+                  <div>
+                    <dt>Filed by</dt>
+                    <dd>{current.submittedBy}</dd>
+                  </div>
+                )}
+              </>
+            </dl>
+          ) : (
+            <div className="qc-meta">
+              <p>
+                Nothing has been filed for this quarter yet. Starting the report
+                opens the Annex A form for {QUARTERS[quarterIndex]} {year}.
+              </p>
+            </div>
+          )}
+        </section>
+      )}
+      {!loading && !error && (
+      <section className="year-strip" aria-labelledby="year-heading">
+        <div className="ys-head">
+          <h2 id="year-heading">Reporting year {year}</h2>
+          <span>
+            {participants.toLocaleString()} participant
+            {participants === 1 ? "" : "s"} reached · {validated} of{" "}
+            {thisYear.length} report{thisYear.length === 1 ? "" : "s"}{" "}
+            validated
+          </span>
+        </div>
+        <div className="ys-grid">
+          {QUARTERS.map((quarter, i) => {
+            const report = reportFor(quarter),
+              future = i > quarterIndex,
+              status = report
+                ? report.status
+                : future
+                  ? "Not yet open"
+                  : "Not filed";
+            return (
+              <div
+                key={quarter}
+                className={i === quarterIndex ? "q-tile current" : "q-tile"}
+              >
+                <div className="q-top">
+                  <b>{quarter}</b>
+                  <span
+                    className={`state-badge ${STATE_TONE[status] || "not-filed"}`}
+                  >
+                    {status}
+                  </span>
+                </div>
+                <small>
+                  {report
+                    ? `${report.id} · ${Number(report.participants || 0).toLocaleString()} participants`
+                    : future
+                      ? `Opens ${QUARTER_OPENS[i]} ${year}`
+                      : "No report on file"}
+                </small>
+                {report ? (
+                  <button
+                    type="button"
+                    className="text-link"
+                    onClick={() => onOpen(report)}
+                  >
+                    Open report
+                  </button>
+                ) : (
+                  !future &&
+                  i !== quarterIndex && (
+                    // A missed earlier quarter can still be filed; the current
+                    // one is started from the card above.
+                    <button
+                      type="button"
+                      className="text-link"
+                      onClick={() => onStart(quarter)}
+                    >
+                      File this report
+                    </button>
+                  )
+                )}
               </div>
             );
           })}
         </div>
-      </div>
+      </section>
+      )}
     </>
   );
 }
@@ -1349,7 +1658,7 @@ function SkPanel({ rows = 4, head = true }) {
   );
 }
 
-function ReportForm({ done, account, revising }) {
+function ReportForm({ done, account, revising, startQuarter }) {
   const [step, setStep] = useState(1),
     [msg, setMsg] = useState(""),
     [busy, setBusy] = useState(false);
@@ -1362,7 +1671,9 @@ function ReportForm({ done, account, revising }) {
     const r = revising || {};
     return {
       region: account.region,
-      quarter: r.quarter || quarterNow(),
+      // A blank report started from a particular quarter (a missed one, from
+      // Home) opens on that quarter rather than the current one.
+      quarter: r.quarter || startQuarter || quarterNow(),
       date: r.dateIso || "",
       regionConcerns: r.regionConcerns || "",
       otherMatters: r.otherMatters || "",
@@ -1481,15 +1792,27 @@ function ReportForm({ done, account, revising }) {
     }
     setBusy(true);
     try {
-      await api({
+      const d = await api({
         action: "submitDialogue",
         accountToken: account.token,
         ...form,
+        // Which report this was opened from. The backend only replaces it if
+        // it is still the live version, so a colleague's newer save is never
+        // silently overwritten by this one.
+        replaces: revising ? revising.id : "",
       });
       // The history the user lands on next must show the report they just filed.
       invalidate("listRegionalSubmissions", "adminDashboard");
-      done();
+      // Handed on so the office sees what happened - which report this one
+      // replaced, and any warning that the attachments could not be shared or
+      // the audit log not written. Those used to be dropped here.
+      done(d);
     } catch (e) {
+      // A refusal here usually means the office's reports changed underneath
+      // this form (a colleague replaced the report being edited). The cached
+      // list would still show the old version, so drop it and the next visit
+      // to Reports fetches the current one.
+      invalidate("listRegionalSubmissions");
       setMsg(e.message);
     } finally {
       setBusy(false);
@@ -1561,9 +1884,23 @@ function ReportForm({ done, account, revising }) {
             </div>
           </div>
           <div className="fields two">
-            <Field label="Quarter" required>
+            <Field
+              label="Quarter"
+              required
+              hint={
+                revising && (
+                  <small className="field-hint">
+                    Fixed while replacing {revising.id}: a replacement stays in
+                    the same quarter.
+                  </small>
+                )
+              }
+            >
               <select
                 value={form.quarter}
+                // The backend refuses a replacement filed under a different
+                // quarter; locking it here saves the office a failed save.
+                disabled={!!revising}
                 onChange={(e) => update("quarter", e.target.value)}
               >
                 {QUARTERS.map((q) => (
@@ -1886,7 +2223,7 @@ function downloadCsv(rows, name = "chedro-dialogue-reports.csv") {
   a.click();
   URL.revokeObjectURL(url);
 }
-function Reports({ account, onRevise }) {
+function Reports({ account, onRevise, onNew, focus, flash }) {
   const [rows, setRows] = useState([]),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
@@ -1935,15 +2272,30 @@ function Reports({ account, onRevise }) {
       <div className="history-banner">
         <Building2 />
         <div>
-          <b>{account.region} submission history</b>
+          <b>{account.region} reports</b>
           <p>
             Reports submitted by any authorized user in your regional office
             appear here.
           </p>
         </div>
         <span>{liveRows.length} active reports</span>
+        {/* The one general way in to the form: this quarter's report is
+            started from Home, but a report for an earlier year (a Q4 filed in
+            January) has no quarter tile there. */}
+        <button type="button" className="secondary" onClick={onNew}>
+          <FilePlus2 />
+          File a report
+        </button>
       </div>
       {error && <p className="notice error-notice">{error}</p>}
+      {flash && (
+        <p
+          className={flash.warn ? "notice error-notice" : "notice"}
+          role="status"
+        >
+          {flash.text}
+        </p>
+      )}
       {needsRevision > 0 && (
         <p className="notice error-notice">
           {needsRevision} report{needsRevision > 1 ? "s" : ""} returned by the
@@ -2005,6 +2357,7 @@ function Reports({ account, onRevise }) {
           <ReportTable
             rows={filtered}
             onRevise={onRevise}
+            initialOpen={focus}
             emptyText="No reports match these filters."
           />
         )}
@@ -2018,9 +2371,24 @@ function ReportTable({
   rows,
   onReview,
   onRevise,
+  initialOpen = "",
+  // Optional line under a report's reference, by report id: { text, tone }.
+  notes = {},
   emptyText = "No reports to show.",
 }) {
-  const [open, setOpen] = useState("");
+  const [open, setOpen] = useState(initialOpen),
+    scrolled = React.useRef(false);
+  // Arriving with a report already chosen (from Home) should land on it, not
+  // leave it expanded somewhere below the fold. Once only: rerunning whenever
+  // the list changed dragged the page back to that row on every keystroke in
+  // the search box.
+  useEffect(() => {
+    if (!initialOpen || scrolled.current) return;
+    const row = document.getElementById(`report-${initialOpen}`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    scrolled.current = true;
+  }, [initialOpen, rows.length]);
   if (!rows.length) return <p className="empty-state">{emptyText}</p>;
   return (
     <div className="table-scroll">
@@ -2038,9 +2406,14 @@ function ReportTable({
         <tbody>
           {rows.map((r) => (
             <React.Fragment key={r.id}>
-              <tr>
+              <tr id={`report-${r.id}`}>
                 <td>
                   <b>{r.id}</b>
+                  {notes[r.id] && (
+                    <span className={`row-note ${notes[r.id].tone || ""}`}>
+                      {notes[r.id].text}
+                    </span>
+                  )}
                 </td>
                 <td>{r.region}</td>
                 <td>
@@ -2305,7 +2678,12 @@ function Admin({ tab, setTab, account }) {
       region: "All CHEDROs",
       status: "All statuses",
       query: "",
-    });
+    }),
+    [jumpToAll, setJumpToAll] = useState(false),
+    // The outcome of the last review decision, shown above the queue.
+    [decision, setDecision] = useState(null);
+  // A decision's note belongs to the page it was made on.
+  useEffect(() => setDecision(null), [tab]);
   useEffect(() => {
     let alive = true;
     cachedApi({ action: "adminDashboard", accountToken: account.token })
@@ -2339,9 +2717,20 @@ function Admin({ tab, setTab, account }) {
         remarks,
       });
       invalidate("adminDashboard", "listRegionalSubmissions");
+      // Said at page level as well as in the row: deciding a report takes it
+      // out of "Awaiting review", which unmounts the row's own panel - and with
+      // it the confirmation, or the warning that the office was not emailed.
+      setDecision({
+        id: reference,
+        text: d?.message || `Marked ${status}.`,
+        warn: d?.notified === false,
+      });
       return d;
     } catch (e) {
       setLive((prev) => ({ ...prev, rows: before }));
+      // The optimistic update had already taken the row out of the queue, so
+      // without this the reviewer would see it reappear with no explanation.
+      setDecision({ id: reference, text: e.message, warn: true });
       throw e;
     }
   }
@@ -2462,80 +2851,100 @@ function Admin({ tab, setTab, account }) {
     () => synthesis(periodRows, periodConcerns),
     [periodConcerns],
   );
+  // The review queue. Its action lists are deliberately NOT limited to the
+  // selected period: a second-quarter report filed late still needs a decision
+  // in the third quarter, and hiding it would also leave the sidebar badge
+  // counting reports the page does not show. The period narrows only what is
+  // naturally per-quarter - who has not filed yet, and the full report list.
+  // References sort by filing date, then sheet row, so id order is oldest first.
+  const byAge = (a, b) => String(a.id).localeCompare(String(b.id)),
+    awaitingRows = liveRows.filter((r) => r.status === "For review").sort(byAge),
+    returnedRows = liveRows
+      .filter((r) => r.status === "Needs revision")
+      .sort(byAge),
+    replaced = replacements(adminRows),
+    replacementNotes = {},
+    singlePeriod =
+      period.quarter !== "All quarters" && period.year !== "All years",
+    unfiledRegions = regions.filter((r) => !submittedRegions.has(r)),
+    validatedRegions = regions.filter((r) =>
+      periodRows.some((x) => x.region === r && x.status === "Validated"),
+    );
+  liveRows.forEach((r) => {
+    const prior = replaced[r.id];
+    if (prior)
+      replacementNotes[r.id] = prior.beforeReview
+        ? { text: `Replaced ${prior.id} before review`, tone: "replaced" }
+        : { text: `Corrects ${prior.id}`, tone: "" };
+  });
+  const replacedBeforeReview = awaitingRows.filter(
+    (r) => replaced[r.id]?.beforeReview,
+  ).length;
+  // Opening an office from the coverage grid lands on its reports in the full
+  // list, below the queue, rather than at the top of the page.
+  useEffect(() => {
+    if (!jumpToAll || tab !== "queue" || loading) return;
+    const list = document.getElementById("all-reports");
+    if (list) list.scrollIntoView({ block: "start" });
+    setJumpToAll(false);
+  }, [jumpToAll, tab, loading]);
   return (
     <>
-      <div className="admin-top">
-        <div className="period">
-          <CalendarDays />
-          <div>
-            <small>Reporting period</small>
-            <div className="period-selects">
-              <select
-                aria-label="Quarter"
-                value={period.quarter}
-                onChange={(e) => setPeriodField("quarter", e.target.value)}
-              >
-                <option>All quarters</option>
-                {QUARTERS.map((q) => (
-                  <option key={q}>{q}</option>
-                ))}
-              </select>
-              <select
-                aria-label="Reporting year"
-                value={period.year}
-                onChange={(e) => setPeriodField("year", e.target.value)}
-              >
-                <option>All years</option>
-                {years.map((y) => (
-                  <option key={y}>{y}</option>
-                ))}
-              </select>
+      {/* Period and export belong to the pages that read a period. Accounts
+          has none, so it never shows controls that would do nothing there. */}
+      {ADMIN_PAGES[tab]?.period && (
+        <div className="admin-top">
+          <div className="period">
+            <CalendarDays />
+            <div>
+              <small>Reporting period</small>
+              <div className="period-selects">
+                <select
+                  aria-label="Quarter"
+                  value={period.quarter}
+                  onChange={(e) => setPeriodField("quarter", e.target.value)}
+                >
+                  <option>All quarters</option>
+                  {QUARTERS.map((q) => (
+                    <option key={q}>{q}</option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Reporting year"
+                  value={period.year}
+                  onChange={(e) => setPeriodField("year", e.target.value)}
+                >
+                  <option>All years</option>
+                  {years.map((y) => (
+                    <option key={y}>{y}</option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
-        </div>
-        <button
-          className="primary"
-          onClick={() =>
-            downloadCsv(
-              filtersActive ? filteredRows : periodRows,
-              `chedro-consolidated-report-${(filtersActive
-                ? filters.region
-                : "all-chedros"
-              )
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, "-")}.csv`,
-            )
-          }
-        >
-          <Download />
-          Export {filtersActive ? "filtered" : "consolidated"} report
-        </button>
-      </div>
-      {loadError && <p className="notice error-notice">{loadError}</p>}
-      <div className="admin-tabs">
-        {[
-          ["summary", "National summary"],
-          ["submissions", "Submissions"],
-          ["themes", "Themes & actions"],
-          ["compliance", "Compliance"],
-          ["users", "User access"],
-        ].map(([k, v]) => (
+          {/* Always the whole period. The filtered export sits on the report
+              table, beside the filters it applies - from here, filters set on
+              the queue would have silently narrowed an export made from
+              another page. */}
           <button
-            key={k}
-            className={tab === k ? "active" : ""}
-            onClick={() => setTab(k)}
+            className="primary"
+            onClick={() =>
+              downloadCsv(periodRows, "chedro-consolidated-report.csv")
+            }
           >
-            {v}
+            <Download />
+            Export consolidated report
           </button>
-        ))}
-      </div>
-      {loading && tab !== "themes" && tab !== "users" && (
+        </div>
+      )}
+      {loadError && <p className="notice error-notice">{loadError}</p>}
+      {loading && tab !== "themes" && tab !== "accounts" && (
         <>
           <SkStats />
           <SkPanel rows={5} />
         </>
       )}
-      {tab === "summary" && !loading && (
+      {tab === "overview" && !loading && (
         <>
           <div className="stats admin-stats">
             <Stat
@@ -2593,10 +3002,13 @@ function Admin({ tab, setTab, account }) {
                       type="button"
                       className={sent ? "region sent" : "region"}
                       key={r}
-                      title={`Open ${r} submissions for ${periodLabel}`}
+                      title={`Open ${r} reports for ${periodLabel}`}
                       onClick={() => {
+                        // The office's reports live in the queue's full list;
+                        // land on it, already filtered, not at the top of the page.
                         setFilter("region", r);
-                        setTab("submissions");
+                        setJumpToAll(true);
+                        setTab("queue");
                       }}
                     >
                       <i>{sent ? <CheckCircle2 /> : <Clock3 />}</i>
@@ -2678,65 +3090,136 @@ function Admin({ tab, setTab, account }) {
           </div>
         </>
       )}
-      {tab === "submissions" && !loading && (
+      {tab === "queue" && !loading && (
         <>
-          <div className="stats admin-stats">
-            <Stat
-              icon={<FileText />}
-              n={String(filteredRows.length)}
-              label="Received"
-              tone="blue"
-            />
-            <Stat
-              icon={<CheckCircle2 />}
-              n={String(
-                filteredRows.filter((r) => r.status === "Validated").length,
-              )}
-              label="Validated"
-              tone="green"
-            />
-            <Stat
-              icon={<Clock3 />}
-              n={String(
-                filteredRows.filter((r) => r.status === "For review").length,
-              )}
-              label="For review"
-              tone="amber"
-            />
-            <Stat
-              icon={<CircleAlert />}
-              n={String(
-                filteredRows.filter((r) => r.status === "Needs revision")
-                  .length,
-              )}
-              label="Needs revision"
-              tone="purple"
+          <div className="queue-chips">
+            <span className="chip for-review">
+              {awaitingRows.length} awaiting review
+            </span>
+            {replacedBeforeReview > 0 && (
+              <span className="chip replaced">
+                {replacedBeforeReview} replaced before review
+              </span>
+            )}
+            <span className="chip needs-revision">
+              {returnedRows.length} returned, waiting on the office
+            </span>
+            {singlePeriod && (
+              <>
+                <span className="chip validated">
+                  {validatedRegions.length} validated · {periodLabel}
+                </span>
+                <span className="chip not-filed">
+                  {unfiledRegions.length} not yet filed · {periodLabel}
+                </span>
+              </>
+            )}
+          </div>
+          {decision && (
+            <p
+              className={decision.warn ? "notice error-notice" : "notice"}
+              role="status"
+            >
+              <b>{decision.id}:</b> {decision.text}
+            </p>
+          )}
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <h3>Awaiting review</h3>
+                <p>
+                  Every period, oldest first. Open a report to validate it or
+                  return it for revision.
+                </p>
+              </div>
+            </div>
+            <ReportTable
+              rows={awaitingRows}
+              onReview={review}
+              notes={replacementNotes}
+              emptyText="Nothing is awaiting review."
             />
           </div>
-          <div className="panel reports">
+          <div className="queue-grid">
+            <div className="panel">
+              <div className="panel-head">
+                <div>
+                  <h3>Returned, waiting on the office</h3>
+                  <p>Every period, oldest first</p>
+                </div>
+              </div>
+              {returnedRows.length ? (
+                <ul className="returned-list">
+                  {returnedRows.map((r) => (
+                    <li key={r.id}>
+                      <div>
+                        <b>{r.region}</b>
+                        <small>
+                          {r.id} · {r.quarter}
+                          {yearOf(r) && ` ${yearOf(r)}`}
+                        </small>
+                      </div>
+                      {r.remarks && <q>{r.remarks}</q>}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="empty-state">
+                  No report is waiting on an office.
+                </p>
+              )}
+            </div>
+            <div className="panel">
+              <div className="panel-head">
+                <div>
+                  <h3>Not yet filed</h3>
+                  <p>{singlePeriod ? periodLabel : "Depends on the quarter"}</p>
+                </div>
+                <button className="text-btn" onClick={() => setTab("overview")}>
+                  National overview <ChevronRight />
+                </button>
+              </div>
+              {singlePeriod ? (
+                <div className="unfiled">
+                  {unfiledRegions.length ? (
+                    <div className="region-chips">
+                      {unfiledRegions.map((r) => (
+                        <span key={r}>{r}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="empty-state">
+                      Every office has filed for {periodLabel}.
+                    </p>
+                  )}
+                  {validatedRegions.length > 0 && (
+                    <small>Validated: {validatedRegions.join(", ")}</small>
+                  )}
+                </div>
+              ) : (
+                <p className="empty-state">
+                  Choose one quarter and one year above to see which offices
+                  have not filed.
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="panel reports" id="all-reports">
             <div className="panel-head">
               <div>
                 <h3>
                   {filters.region === "All CHEDROs"
-                    ? "Regional submissions"
-                    : `${filters.region} submissions`}
+                    ? "All reports"
+                    : `${filters.region} reports`}
                 </h3>
-                <p>
-                  {periodLabel} · review, validate and follow up with reporting
-                  offices
-                </p>
-              </div>
-              <div className="legend">
-                <i className="green-dot" />
-                Validated <i className="amber-dot" />
-                For review
+                <p>{periodLabel} · every report, including validated ones</p>
               </div>
             </div>
             <div className="toolbar">
               <div className="search">
                 <Search />
                 <input
-                  aria-label="Search submissions"
+                  aria-label="Search reports"
                   value={filters.query}
                   onChange={(e) => setFilter("query", e.target.value)}
                   placeholder="Search reference, office or reported concern…"
@@ -2778,7 +3261,16 @@ function Admin({ tab, setTab, account }) {
                   Clear
                 </button>
               )}
-              <button onClick={() => downloadCsv(filteredRows)}>
+              <button
+                onClick={() =>
+                  downloadCsv(
+                    filteredRows,
+                    `chedro-reports-${filters.region
+                      .toLowerCase()
+                      .replace(/[^a-z0-9]+/g, "-")}.csv`,
+                  )
+                }
+              >
                 <Download />
                 Export
               </button>
@@ -2786,10 +3278,11 @@ function Admin({ tab, setTab, account }) {
             <ReportTable
               rows={filteredRows}
               onReview={review}
+              notes={replacementNotes}
               emptyText={
                 filtersActive
-                  ? "No submissions match these filters."
-                  : `No submissions recorded for ${periodLabel}.`
+                  ? "No reports match these filters."
+                  : `No reports recorded for ${periodLabel}.`
               }
             />
           </div>
@@ -2881,7 +3374,7 @@ function Admin({ tab, setTab, account }) {
           </div>
         </>
       )}
-      {tab === "users" && <UserAccess account={account} />}
+      {tab === "accounts" && <UserAccess account={account} />}
     </>
   );
 }
