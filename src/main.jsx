@@ -90,6 +90,19 @@ function cachedApi(payload, force) {
   cache.set(key, { at: Date.now(), promise });
   return promise;
 }
+/**
+ * Store a response the caller already knows to be current - typically its own
+ * state after a write the server has confirmed - so the next read is served
+ * from memory instead of downloading everything again. Keyed exactly as
+ * cachedApi() keys its reads.
+ */
+function primeCache(payload, data) {
+  cache.set(payload.action + "|" + (payload.accountToken || ""), {
+    at: Date.now(),
+    promise: Promise.resolve(data),
+  });
+  window.dispatchEvent(new Event(DATA_CHANGED));
+}
 /** Fired whenever cached data is dropped, so anything summarising it (the
  * notification bell, the sidebar badges) re-reads instead of going stale. */
 const DATA_CHANGED = "chedro:data-changed";
@@ -509,15 +522,31 @@ function App() {
     [signedOut, setSignedOut] = useState(""),
     [notifications, setNotifications] = useState(false);
   const attention = useAttention(account);
+  /**
+   * End a session in this tab: its data and everything the screen was holding
+   * for it. The cache was already cleared, but the screen state was not, so
+   * the next account to sign in could be shown the previous one's submission
+   * notice, or land on the page the previous administrator left open.
+   */
+  const endSession = () => {
+    sessionStorage.removeItem("chedro_account");
+    cache.clear();
+    setAccount(null);
+    setPage("dashboard");
+    setAdminTab("queue");
+    setMobile(false);
+    setRevising(null);
+    setStartQuarter("");
+    setFocus("");
+    setFlash(null);
+    setNotifications(false);
+  };
   // A session can end while the tab is open: it lapses after two hours, or the
   // Central Office rejects the account, or the password is reset elsewhere.
   useEffect(() => {
     const lost = (e) => {
-      sessionStorage.removeItem("chedro_account");
-      // Never leave one account's reports cached for whoever signs in next.
-      cache.clear();
       setSignedOut(e.detail || "Your session has ended. Please sign in again.");
-      setAccount(null);
+      endSession();
     };
     window.addEventListener(SESSION_LOST, lost);
     return () => window.removeEventListener(SESSION_LOST, lost);
@@ -530,7 +559,11 @@ function App() {
           setSignedOut("");
           setAccount(u);
           sessionStorage.setItem("chedro_account", JSON.stringify(u));
+          // Every sign-in starts at its role's landing page. endSession()
+          // already cleared the previous session's screen state; this covers
+          // a page loaded fresh onto the sign-in screen as well.
           setPage(u.role.startsWith("central") ? "admin" : "dashboard");
+          setAdminTab("queue");
         }}
       />
     );
@@ -562,6 +595,8 @@ function App() {
   };
   const openReport = (report) => {
     setFocus(report.id);
+    // A submission notice belongs to the visit that followed the submission.
+    setFlash(null);
     setNotifications(false);
     setPage("reports");
   };
@@ -586,11 +621,12 @@ function App() {
           };
   // Only items that call for action count toward the badge. An unfiled quarter
   // is listed but not counted: it would sit on the bell for three months.
-  const bellCount = attention
-    ? admin
-      ? attention.awaiting + attention.requests
-      : attention.returned
-    : 0;
+  const bellCount =
+    attention && !attention.error
+      ? admin
+        ? attention.awaiting + attention.requests
+        : attention.returned
+      : 0;
   return (
     <div className="shell">
       <aside className={mobile ? "sidebar open" : "sidebar"}>
@@ -691,11 +727,7 @@ function App() {
           <button
             title="Sign out"
             aria-label="Sign out"
-            onClick={() => {
-              sessionStorage.removeItem("chedro_account");
-              cache.clear();
-              setAccount(null);
-            }}
+            onClick={endSession}
           >
             <LogOut />
           </button>
@@ -798,6 +830,20 @@ function App() {
 /** The bell's contents: what needs doing, each line a way to go and do it. */
 function Attention({ admin, attention, onQueue, onAccounts, onHome, onReports }) {
   if (!attention) return <p>Loading…</p>;
+  if (attention.error)
+    return (
+      <div className="attention-error">
+        <p>Notifications could not be loaded: {attention.error}</p>
+        <button
+          type="button"
+          className="secondary"
+          // The failed read was dropped from the cache, so this refetches.
+          onClick={() => window.dispatchEvent(new Event(DATA_CHANGED))}
+        >
+          Try again
+        </button>
+      </div>
+    );
   const items = admin
     ? [
         attention.awaiting > 0 && {
@@ -1307,9 +1353,15 @@ function useAttention(account) {
   const [counts, setCounts] = useState(null);
   useEffect(() => {
     if (!account) return undefined;
-    let alive = true;
+    let alive = true,
+      // Loads can overlap (two quick decisions each fire DATA_CHANGED). Only
+      // the most recently started one may set the counts, so a slow early
+      // response can never overwrite a newer one.
+      latest = 0;
     const admin = account.role.startsWith("central");
     const load = () => {
+      const mine = ++latest;
+      const current = () => alive && mine === latest;
       const reads = admin
         ? [
             cachedApi({ action: "adminDashboard", accountToken: account.token }),
@@ -1323,7 +1375,7 @@ function useAttention(account) {
           ];
       Promise.all(reads)
         .then(([reports, accounts]) => {
-          if (!alive) return;
+          if (!current()) return;
           const live = (reports.rows || []).filter(isLive);
           if (admin)
             setCounts({
@@ -1344,8 +1396,9 @@ function useAttention(account) {
             });
           }
         })
-        // The bell is a summary: if it cannot load, the pages still say why.
-        .catch(() => alive && setCounts(null));
+        // Said as a failure, not left as "Loading…": a bell that never finishes
+        // loading reads as nothing to do, and hides reports awaiting review.
+        .catch((e) => current() && setCounts({ error: e.message }));
     };
     load();
     window.addEventListener(DATA_CHANGED, load);
@@ -1356,14 +1409,15 @@ function useAttention(account) {
   }, [account]);
   return counts;
 }
-/** Badge colours per report state, matching the status badges elsewhere. */
-const STATE_TONE = {
-  "Not filed": "not-filed",
-  "Not yet open": "not-filed",
-  "For review": "for-review",
-  "Needs revision": "needs-revision",
-  Validated: "validated",
-};
+/** The style class for a report status ("Needs revision" -> needs-revision).
+ * Every status badge - the tables' Status, Home's quarter badges and the
+ * queue's chips - takes its colours from this one class, defined once in
+ * styles.css, so a status looks the same wherever it appears. */
+const toneOf = (status) =>
+  String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
 /**
  * The CHEDRO's landing page, built around the one thing each quarter asks of
  * the office: this quarter's report. Whatever state it is in decides the single
@@ -1448,7 +1502,7 @@ function Home({ account, onStart, onRevise, onOpen }) {
             </span>
             <div className="qc-title">
               <h2 id="quarter-heading">{card.headline}</h2>
-              <span className={`state-badge ${STATE_TONE[state] || "not-filed"}`}>
+              <span className={`state-badge ${toneOf(state)}`}>
                 {state}
               </span>
             </div>
@@ -1542,7 +1596,7 @@ function Home({ account, onStart, onRevise, onOpen }) {
                 <div className="q-top">
                   <b>{quarter}</b>
                   <span
-                    className={`state-badge ${STATE_TONE[status] || "not-filed"}`}
+                    className={`state-badge ${toneOf(status)}`}
                   >
                     {status}
                   </span>
@@ -2659,12 +2713,13 @@ function ReviewActions({ report, onReview }) {
 function Status({ s }) {
   const label = String(s || "").trim() || "For review";
   return (
-    <span className={"status " + label.toLowerCase().replaceAll(" ", "-")}>
+    <span className={"status " + toneOf(label)}>
       {label}
     </span>
   );
 }
 function Admin({ tab, setTab, account }) {
+  const liveRef = React.useRef(null);
   const [live, setLive] = useState(null),
     [loading, setLoading] = useState(true),
     [loadError, setLoadError] = useState("");
@@ -2682,6 +2737,10 @@ function Admin({ tab, setTab, account }) {
     [jumpToAll, setJumpToAll] = useState(false),
     // The outcome of the last review decision, shown above the queue.
     [decision, setDecision] = useState(null);
+  // The latest rendered rows, for handing to the cache once a decision is
+  // confirmed. By then the optimistic change has rendered, and so has any other
+  // decision made while this one was in flight.
+  liveRef.current = live;
   // A decision's note belongs to the page it was made on.
   useEffect(() => setDecision(null), [tab]);
   useEffect(() => {
@@ -2704,10 +2763,15 @@ function Admin({ tab, setTab, account }) {
    * is put back exactly as it was, so the screen never keeps a decision the
    * Sheet did not record. */
   async function review(reference, status, remarks) {
-    const before = live?.rows || [];
-    const patch = (rows) =>
-      rows.map((r) => (r.id === reference ? { ...r, status, remarks } : r));
-    setLive((prev) => ({ ...prev, rows: patch(prev?.rows || []) }));
+    // Only this row is remembered: restoring a snapshot of the whole list on
+    // failure would also undo any other decision that landed in the meantime.
+    const original = (live?.rows || []).find((r) => r.id === reference);
+    const setRow = (next) =>
+      setLive((prev) => ({
+        ...prev,
+        rows: (prev?.rows || []).map((r) => (r.id === reference ? next : r)),
+      }));
+    setRow({ ...original, status, remarks });
     try {
       const d = await api({
         action: "reviewSubmission",
@@ -2716,7 +2780,14 @@ function Admin({ tab, setTab, account }) {
         status,
         remarks,
       });
-      invalidate("adminDashboard", "listRegionalSubmissions");
+      // The page's own rows are now exactly what the server holds, so they are
+      // handed to the cache rather than the cache being dropped. Dropping it
+      // made the bell download the whole dashboard - every report, every
+      // narrative - after each decision just to recount one badge.
+      primeCache(
+        { action: "adminDashboard", accountToken: account.token },
+        liveRef.current,
+      );
       // Said at page level as well as in the row: deciding a report takes it
       // out of "Awaiting review", which unmounts the row's own panel - and with
       // it the confirmation, or the warning that the office was not emailed.
@@ -2727,7 +2798,7 @@ function Admin({ tab, setTab, account }) {
       });
       return d;
     } catch (e) {
-      setLive((prev) => ({ ...prev, rows: before }));
+      if (original) setRow(original);
       // The optimistic update had already taken the row out of the queue, so
       // without this the reviewer would see it reappear with no explanation.
       setDecision({ id: reference, text: e.message, warn: true });

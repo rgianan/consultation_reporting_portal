@@ -209,27 +209,6 @@ header p {
   max-width: 1500px;
   margin: auto;
 }
-.hero {
-  background: linear-gradient(115deg, #163c70, #204f8d);
-  border-radius: 16px;
-  min-height: 265px;
-  padding: 40px 44px;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  box-shadow: 0 13px 30px #163c7024;
-}
-.hero h2 {
-  font: 800 34px/1.18 Manrope;
-  margin: 12px 0;
-}
-.hero > div > p {
-  color: #cedcf0;
-  max-width: 560px;
-  font-size: 14px;
-  line-height: 1.6;
-}
 .eyebrow {
   color: #f3cb61;
   font-size: 11px;
@@ -252,55 +231,12 @@ header p {
 .primary svg {
   width: 16px;
 }
-.hero .primary {
-  margin-top: 10px;
-}
-.hero-card {
-  background: #fff;
-  color: #172036;
-  width: 285px;
-  padding: 22px;
-  border-radius: 12px;
-  box-shadow: 0 8px 25px #0c244a42;
-}
-.hero-card > span {
-  color: #7e8795;
-  font-size: 11px;
-}
-.hero-card > b {
-  float: right;
-  font: 800 18px Manrope;
-}
-.progress,
 .big-progress {
   height: 7px;
   background: #e7ebf0;
   border-radius: 8px;
   clear: both;
   margin: 18px 0;
-}
-.progress i {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 8px;
-  background: #2e71c7;
-}
-.hero-card p {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #236744;
-  font-size: 11px;
-  font-weight: 700;
-  margin: 14px 0 4px;
-}
-.hero-card p svg {
-  width: 15px;
-}
-.hero-card small {
-  font-size: 10px;
-  color: #8c94a0;
 }
 .stats {
   display: grid;
@@ -351,7 +287,6 @@ header p {
   font-size: 11px;
   color: #7c8594;
 }
-.grid-two,
 .summary-grid {
   display: grid;
   grid-template-columns: 2fr 1fr;
@@ -422,20 +357,35 @@ td b {
   font-size: 9px;
   font-weight: 700;
 }
-.status.validated {
+/* Report status colours, shared by every badge that shows one: the tables'
+   .status, Home's .state-badge and the review queue's .chip. Kept in one place
+   so a status can never look different on two screens. */
+.status.validated,
+.state-badge.validated,
+.chip.validated {
   background: #e4f5ea;
   color: #267047;
 }
-.status.for-review {
+.status.for-review,
+.state-badge.for-review,
+.chip.for-review {
   background: #fff1d4;
-  color: #9b6711;
+  /* #9b6711 measured about 4.3:1 on this fill, short of 4.5:1 for badge-size
+     text; this reaches about 5.3:1. */
+  color: #8a5a0e;
 }
-.status.needs-revision {
+.status.needs-revision,
+.state-badge.needs-revision,
+.chip.needs-revision {
   background: #fde8e8;
   color: #a13939;
 }
-/* Replaced by a corrected submission: kept for the record, deliberately the
-   quietest badge so it never reads as an outstanding action. */
+.state-badge.not-filed,
+.state-badge.not-yet-open,
+.chip.not-filed {
+  background: #eceef2;
+  color: #3e4a5d;
+}
 /* Character counter: appears only near a field's cap, since the backend
    refuses over-long values rather than trimming them. */
 .limit {
@@ -455,44 +405,11 @@ td b {
   color: #a13939;
   font-weight: 700;
 }
+/* Replaced by a corrected submission: kept for the record, deliberately the
+   quietest badge so it never reads as an outstanding action. */
 .status.superseded {
   background: #eceef2;
   color: #5b6675;
-}
-.timeline {
-  padding-bottom: 16px;
-}
-.mile {
-  display: flex;
-  gap: 12px;
-  margin: 17px 22px;
-}
-.mile > i {
-  width: 27px;
-  height: 27px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: #eef1f4;
-  color: #8d96a3;
-  font-style: normal;
-  font-size: 10px;
-  font-weight: 700;
-}
-.mile.done > i {
-  background: #e4f3ea;
-  color: #2f8154;
-}
-.mile svg {
-  width: 15px;
-}
-.mile b {
-  display: block;
-  font-size: 11px;
-}
-.mile small {
-  font-size: 10px;
-  color: #8a93a0;
 }
 .form-wrap {
   max-width: 1080px;
@@ -1007,12 +924,8 @@ td b {
     padding-left: 22px;
     padding-right: 22px;
   }
-  .grid-two,
   .summary-grid {
     grid-template-columns: 1fr;
-  }
-  .hero {
-    gap: 30px;
   }
   .stats {
     grid-template-columns: repeat(2, 1fr);
@@ -1050,35 +963,11 @@ td b {
   .role-pill {
     display: none;
   }
-  /* Five tabs never fit a phone; let them scroll rather than truncate. */
-  .admin-tabs {
-    overflow-x: auto;
-    scrollbar-width: none;
-    flex-wrap: nowrap;
-  }
-  .admin-tabs::-webkit-scrollbar {
-    display: none;
-  }
-  .admin-tabs button {
-    white-space: nowrap;
-    flex: none;
-  }
   .content {
     padding: 18px 14px;
   }
   .admin-switch {
     display: none;
-  }
-  .hero {
-    padding: 28px 23px;
-    display: block;
-  }
-  .hero h2 {
-    font-size: 27px;
-  }
-  .hero-card {
-    width: 100%;
-    margin-top: 25px;
   }
   .stats {
     grid-template-columns: 1fr 1fr;
@@ -1119,25 +1008,6 @@ td b {
     width: 100%;
     flex-basis: 100%;
   }
-}
-.admin-tabs {
-  display: flex;
-  gap: 5px;
-  margin: 20px 0 0;
-  border-bottom: 1px solid #dfe4eb;
-}
-.admin-tabs button {
-  border: 0;
-  background: transparent;
-  padding: 11px 15px;
-  color: #788391;
-  font-size: 11px;
-  font-weight: 700;
-  border-bottom: 2px solid transparent;
-}
-.admin-tabs button.active {
-  color: #1d548f;
-  border-color: #1d548f;
 }
 .metric-grid {
   display: grid;
@@ -1340,12 +1210,6 @@ td b {
   }
   .quotes {
     grid-template-columns: 1fr;
-  }
-  .admin-tabs {
-    overflow-x: auto;
-  }
-  .admin-tabs button {
-    white-space: nowrap;
   }
 }
 .role-pill {
@@ -2544,22 +2408,6 @@ tbody tr {
   font-weight: 700;
   white-space: nowrap;
 }
-.state-badge.not-filed {
-  background: #eceef2;
-  color: #3e4a5d;
-}
-.state-badge.for-review {
-  background: #fff1d4;
-  color: #8a5a0e;
-}
-.state-badge.needs-revision {
-  background: #fde8e8;
-  color: #a13939;
-}
-.state-badge.validated {
-  background: #e4f5ea;
-  color: #267047;
-}
 .qc-remarks {
   max-width: 640px;
   padding: 13px 15px;
@@ -2725,25 +2573,9 @@ tbody tr {
   font-size: 12px;
   font-weight: 700;
 }
-.chip.for-review {
-  background: #fff1d4;
-  color: #7d520c;
-}
 .chip.replaced {
   background: #e3edf9;
   color: #1f4f8a;
-}
-.chip.needs-revision {
-  background: #fde8e8;
-  color: #a13939;
-}
-.chip.validated {
-  background: #e4f5ea;
-  color: #267047;
-}
-.chip.not-filed {
-  background: #eceef2;
-  color: #3e4a5d;
 }
 .row-note {
   display: block;
@@ -2862,4 +2694,16 @@ tbody tr {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+.attention-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.attention-error p {
+  color: #a13939;
+}
+.attention-error .secondary {
+  align-self: flex-start;
+  min-height: 36px;
 }
